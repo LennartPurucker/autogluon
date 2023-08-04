@@ -84,8 +84,29 @@ class KNNModel(AbstractModel):
 
     def _fit(self, X, y, num_cpus=-1, time_limit=None, sample_weight=None, **kwargs):
         time_start = time.time()
-        X = self.preprocess(X)
         params = self._get_model_params()
+
+        # ----------- DUPLICATE TESTING START -----------
+        if params.pop("drop_duplicates", False):
+            # Duplicate Code
+            label = "class"
+            l2_train_data = X.copy()
+            l2_train_data[label] = y
+            l2_train_data.reset_index(drop=True, inplace=True)
+            oof_col_names = self.feature_metadata.get_features(required_special_types=['stack'])
+
+            ignore_feature_duplicates = oof_col_names + [label]
+            ignore_cols = ignore_feature_duplicates
+            mask = l2_train_data.drop(columns=ignore_cols).duplicated()
+
+            # Drop code
+            l2_train_data = l2_train_data[~mask]
+            X = l2_train_data.drop(columns=[label])
+            y = l2_train_data[label]
+        # ----------- DUPLICATE TESTING END ----------
+
+        X = self.preprocess(X)
+
         if "n_jobs" not in params:
             params["n_jobs"] = num_cpus
         if sample_weight is not None:  # TODO: support

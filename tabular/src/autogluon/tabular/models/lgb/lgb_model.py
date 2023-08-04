@@ -194,6 +194,14 @@ class LGBModel(AbstractModel):
             y = l2_train_data[label]
         #----------- DUPLICATE TESTING END ----------
 
+        # ----------- NOISE TESTING START -----------
+        if params.pop("random_noise_for_stack", False):
+            rng = np.random.RandomState(42)
+            stack_f = self.feature_metadata.get_features(required_special_types=['stack'])
+            for col in stack_f:
+                X.loc[:, col] = rng.randn(*X.loc[:, col].values.shape)
+        # ----------- NOISE TESTING START -----------
+
         num_rows_train = len(X)
         dataset_train, dataset_val = self.generate_datasets(
             X=X, y=y, params=params, X_val=X_val, y_val=y_val, sample_weight=sample_weight, sample_weight_val=sample_weight_val
