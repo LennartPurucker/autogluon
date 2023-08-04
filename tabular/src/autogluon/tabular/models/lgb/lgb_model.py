@@ -107,6 +107,93 @@ class LGBModel(AbstractModel):
         if "verbose" not in params:
             params["verbose"] = -1
 
+        # ----------- DUPLICATE TESTING START -----------
+        if params.pop("drop_duplicates", False):
+            # Duplicate Code
+            label = "class"
+            l2_train_data = X.copy()
+            l2_train_data[label] = y
+            l2_train_data.reset_index(drop=True, inplace=True)
+            oof_col_names = self.feature_metadata.get_features(required_special_types=['stack'])
+
+            ignore_feature_duplicates = oof_col_names + [label]
+            # ignore_feature_label_duplicates = oof_col_names
+            ignore_cols = ignore_feature_duplicates
+            mask = l2_train_data.drop(columns=ignore_cols).duplicated()
+            # print("n+duplicates:", sum(mask) / len(mask))
+
+            # # Compute sample weight raw
+            # rel_cols = [x for x in l2_train_data.columns if x not in ignore_cols]
+            # idx_sample_weight = []
+            # for group_idx_list in l2_train_data.groupby(rel_cols).groups.values():
+            #     group_idx_list = list(group_idx_list)
+            #     n_dup = len(group_idx_list)
+            #     for idx in group_idx_list:
+            #         idx_sample_weight.append((idx, n_dup))
+            #
+            # sample_weight = np.array([s_c for _, s_c in sorted(idx_sample_weight, key=lambda x: x[0])])
+            # sample_weight = sample_weight[~mask]
+
+            # # Equalize code
+            # rel_cols = [x for x in l2_train_data.columns if x not in ignore_cols]
+            # keep_weight_list = []
+            # org_len = len(l2_train_data)
+            # l, counts = np.unique(y, return_counts=True)
+            # major_label = l[np.argmax(counts)]
+            # rng = np.random.RandomState(42)
+            # for group_idx_list in l2_train_data.groupby(rel_cols).groups.values():
+            #
+            #     # --- Sample weight and clever drop code
+            #     group_idx_list = list(group_idx_list)
+            #     n_dup = len(group_idx_list)
+            #     if n_dup == 1:
+            #         keep_index = group_idx_list[0]
+            #         sample_count = 1
+            #     else:
+            #         sample_count = n_dup
+            #         subset = l2_train_data.loc[group_idx_list, label]
+            #         counts = subset.value_counts()
+            #
+            #         # Random dropping
+            #         # sel_label = rng.choice(counts.index)
+            #
+            #         # Clever dropping
+            #         if len(counts) == 1:
+            #             # No disparity  (could merge this but meh for rng)
+            #             sel_label = counts.index[0]
+            #         elif all(counts == counts.iloc[0]):
+            #             # Tie breaker random
+            #             sel_label = rng.choice(counts.index)
+            #             # Tie breaker major class
+            #             # sel_label = major_label
+            #         else:
+            #             # Popularity/majority vote
+            #             sel_label = counts.index[0]
+            #
+            #         keep_index = subset[subset == sel_label].index[0]
+            #     keep_weight_list.append((keep_index, sample_count))
+            #
+            #     # # - Equalize code
+            #     # if len(group_idx_list) == 1:
+            #     #     continue
+            #     # for oof_col in oof_col_names:
+            #     #     curr_vals = l2_train_data.loc[group_idx_list, oof_col]
+            #     #     # could do majority or avg here... not sure what is better, stick to avg for now
+            #     #     l2_train_data.loc[group_idx_list, oof_col] = curr_vals.max()
+            #
+            # # clever drop
+            # keep_idx_list = [idx for idx, _ in keep_weight_list]
+            # l2_train_data = l2_train_data.loc[keep_idx_list]
+            #
+            # # FIXME Would need to add more clever logic to merge existing sample weights
+            # sample_weight = np.array([s_c for _, s_c in keep_weight_list]) # /org_len
+
+            # Drop code
+            l2_train_data = l2_train_data[~mask]
+            X = l2_train_data.drop(columns=[label])
+            y = l2_train_data[label]
+        #----------- DUPLICATE TESTING END ----------
+
         num_rows_train = len(X)
         dataset_train, dataset_val = self.generate_datasets(
             X=X, y=y, params=params, X_val=X_val, y_val=y_val, sample_weight=sample_weight, sample_weight_val=sample_weight_val
