@@ -160,6 +160,8 @@ class RFModel(AbstractModel):
 
         # ----------- DUPLICATE TESTING START -----------
         if params.pop("drop_duplicates", False):
+            raise NotImplementedError("This is likely bugged due to the OOB approach. Would need to prune during or "
+                                      "after sampling!")
             # Duplicate Code
             label = "class"
             l2_train_data = X.copy()

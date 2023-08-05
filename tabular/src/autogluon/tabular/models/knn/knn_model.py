@@ -88,6 +88,7 @@ class KNNModel(AbstractModel):
 
         # ----------- DUPLICATE TESTING START -----------
         if params.pop("drop_duplicates", False):
+            raise NotImplementedError("This is bugged due to the LOO approach. Unsure how to fix this right now.")
             # Duplicate Code
             label = "class"
             l2_train_data = X.copy()
