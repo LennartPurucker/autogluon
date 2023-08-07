@@ -282,7 +282,7 @@ class LGBModel(AbstractModel):
         if train_params["params"].pop("monotone_constraints_for_stack_features", False):
             stack_features = self.feature_metadata.get_features(required_special_types=['stack'])
             train_params["params"]["monotone_constraints"] = \
-                [1 if col in stack_features else 0 for col in X.columns]
+                [1 if col in stack_features else 0 for col in dataset_train.data.columns]
 
         # Train LightGBM model:
         from lightgbm.basic import LightGBMError
