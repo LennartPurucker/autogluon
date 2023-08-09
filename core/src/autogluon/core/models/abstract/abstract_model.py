@@ -1880,3 +1880,7 @@ class AbstractModel:
 
     def _get_model_base(self):
         return self
+
+    def _get_fold_seed(self):
+        name_seed = int(self.name.replace('S', '').replace('F', ''))
+        return np.random.RandomState(name_seed).randint(0, np.iinfo(np.int32).max)

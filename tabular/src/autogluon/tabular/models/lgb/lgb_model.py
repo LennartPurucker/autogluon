@@ -277,7 +277,7 @@ class LGBModel(AbstractModel):
         if log_period is not None:
             callbacks.append(log_evaluation(period=log_period))
 
-        seed_val = params.pop("seed_value", 0)
+        seed_val = params.pop("seed_value", 0 if params.pop('static_seed', True) else self._get_fold_seed())
         train_params = {
             "params": params,
             "train_set": dataset_train,
@@ -301,6 +301,14 @@ class LGBModel(AbstractModel):
             train_params["params"]["seed"] = seed_val
             random.seed(seed_val)
             np.random.seed(seed_val)
+
+            # Sanity
+            train_params["params"]["bagging_seed"] = seed_val + 1
+            train_params["params"]["feature_fraction_seed"] = seed_val + 2
+            train_params["params"]["extra_seed"] = seed_val + 3
+            train_params["params"]["drop_seed"] = seed_val + 4
+            train_params["params"]["data_random_seed"] = seed_val + 5
+            train_params["params"]["objective_seed"] = seed_val + 6
 
         # Add monotone constraints for all stack features
         if train_params["params"].pop("monotone_constraints_for_stack_features", False):
