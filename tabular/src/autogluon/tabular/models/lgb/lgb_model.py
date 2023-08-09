@@ -202,6 +202,30 @@ class LGBModel(AbstractModel):
                 X.loc[:, col] = rng.randn(*X.loc[:, col].values.shape)
         # ----------- NOISE TESTING START -----------
 
+        # ----------- OCI TESTING START -----------
+        if params.pop("only_correct_instances", False):
+
+            if self.num_classes != 2:
+                raise NotImplementedError("only_correct_instances is only implemented for binary classification for now.")
+
+            stack_f = self.feature_metadata.get_features(required_special_types=['stack'])
+            tmp_X = X[stack_f].copy()
+            classes_ = np.unique(y)
+
+            threshold = 0.45 # technically would need to find the correct threshold per column and tune it...
+            tmp_X = tmp_X.mask(tmp_X <= threshold, classes_[0])
+            tmp_X = tmp_X.mask(tmp_X > threshold, classes_[1])
+            s_tmp = tmp_X.sum(axis=1)
+
+            no_diversity_rows = (s_tmp == 0) | (s_tmp == len(stack_f))
+            s_tmp = s_tmp[no_diversity_rows]
+            s_tmp[s_tmp == len(stack_f)] = 1
+            always_wrong_row_indices = s_tmp.index[s_tmp != y[no_diversity_rows]]
+
+            X = X.drop(index=always_wrong_row_indices)
+            y = y.drop(index=always_wrong_row_indices)
+        # ----------- OCI TESTING START -----------
+
         num_rows_train = len(X)
         dataset_train, dataset_val = self.generate_datasets(
             X=X, y=y, params=params, X_val=X_val, y_val=y_val, sample_weight=sample_weight, sample_weight_val=sample_weight_val

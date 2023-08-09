@@ -65,7 +65,18 @@ class CVSplitter:
         else:
             raise AssertionError(f"{splitter_cls} is not supported as a valid `splitter_cls` input to CVSplitter.")
 
-    def split(self, X, y):
+    def split(self, X, y, safety_shuffle=False):
+
+        if safety_shuffle:
+            # Dummy implementation only for testing
+            X = X.copy()
+
+            X['class'] = y
+            X = X.sample(frac=1, random_state=0)
+            y = X["class"].values
+            X = X.drop(columns=["class"])
+
+
         if isinstance(self._splitter, RepeatedStratifiedKFold):
             # FIXME: There is a bug in sklearn that causes an incorrect ValueError if performing stratification and all classes have fewer than n_splits samples.
             #  This is hacked by adding a dummy class with n_splits samples, performing the kfold split, then removing the dummy samples from all resulting indices.
@@ -83,6 +94,10 @@ class CVSplitter:
                         train_index, test_index = out[i]
                         out[i][0] = [index for index in train_index if index not in invalid_index]
                         out[i][1] = [index for index in test_index if index not in invalid_index]
+
+            if safety_shuffle:
+                out = [[X.index[train_index], X.index[test_index]] for (train_index, test_index) in out]
+
             return out
         else:
             return [[train_index, test_index] for train_index, test_index in self._splitter.split(X, y, groups=self.groups)]
