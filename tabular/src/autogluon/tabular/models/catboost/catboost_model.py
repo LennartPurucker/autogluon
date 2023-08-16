@@ -158,6 +158,14 @@ class CatBoostModel(AbstractModel):
                 params["colsample_bylevel"] = 1.0
                 logger.log(30, f"\t'colsample_bylevel' is not supported on GPU, using default value (Default = 1).")
 
+        if params.pop("monotone_constraints_for_stack_features", False):
+            # FIXME, CatBoost does not support either:
+            #   params["monotone_penalty"] = 0
+            #   params["monotone_constraints_method"] = 'advanced'
+            stack_features = self.feature_metadata.get_features(required_special_types=['stack'])
+            params["monotone_constraints"] = str(tuple([1 if col in stack_features else 0
+                                                        for col in X.get_feature_names()])).replace(' ', '')
+
         logger.log(15, f"\tCatboost model hyperparameters: {params}")
 
         extra_fit_kwargs = dict()

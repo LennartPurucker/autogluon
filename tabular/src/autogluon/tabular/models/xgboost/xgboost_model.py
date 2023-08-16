@@ -131,6 +131,26 @@ class XGBoostModel(AbstractModel):
             callbacks.append(EarlyStoppingCustom(early_stopping_rounds, start_time=start_time, time_limit=time_limit, verbose=verbose))
             params["callbacks"] = callbacks
 
+        if params.pop("monotone_constraints_for_stack_features", False):
+            # FIXME: might create problems in relation to hist as tree_method, see
+            #   https://xgboost.readthedocs.io/en/stable/tutorials/monotonic.html
+            # FIXME, XGB does not support either:
+            #   params["monotone_penalty"] = 0
+            #   params["monotone_constraints_method"] = 'advanced'
+
+            stack_features = self.feature_metadata.get_features(required_special_types=['stack'])
+            # From xgboost_utils.OheFeatureGenerator
+            col_order = self._ohe_generator.cat_cols + self._ohe_generator.other_cols if self._ohe else X.columns
+            # string due to bug in xgb after loading from pickle if using tuple
+            params["monotone_constraints"] = str(tuple([1 if col in stack_features else 0 for col in col_order]))
+
+        if params.pop("stack_feature_interactions_map", False):
+            stack_features = self.feature_metadata.get_features(required_special_types=['stack'])
+            col_order = self._ohe_generator.cat_cols + self._ohe_generator.other_cols if self._ohe else X.columns
+            X_f = [i for i, col in enumerate(col_order) if col not in stack_features]
+            oof_f = [i for i, col in enumerate(col_order) if col in stack_features]
+            params["interaction_constraints"] = str([X_f + [f] for f in oof_f])
+
         from xgboost import XGBClassifier, XGBRegressor
 
         model_type = XGBClassifier if self.problem_type in PROBLEM_TYPES_CLASSIFICATION else XGBRegressor

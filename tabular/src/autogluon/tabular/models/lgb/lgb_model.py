@@ -316,16 +316,16 @@ class LGBModel(AbstractModel):
             train_params["params"]["monotone_constraints"] = \
                 [1 if col in stack_features else 0 for col in dataset_train.data.columns]
 
+            # Our defaults for now
+            train_params["params"]["monotone_penalty"] = 0
+            train_params["params"]["monotone_constraints_method"] = 'advanced'
+
         if train_params["params"].pop("stack_feature_interactions_map", False):
             # Interaction constraints test
             stack_features = self.feature_metadata.get_features(required_special_types=['stack'])
             X_f = [i for i, col in enumerate(dataset_train.data.columns) if col not in stack_features]
             oof_f = [i for i, col in enumerate(dataset_train.data.columns) if col in stack_features]
-
-            # -- this way is way too slow for many features but works.!
-            train_params["params"]["interaction_constraints"] = [
-                X_f + [f] for f in oof_f
-            ]
+            train_params["params"]["interaction_constraints"] = [X_f + [f] for f in oof_f]
 
         # Train LightGBM model:
         from lightgbm.basic import LightGBMError
