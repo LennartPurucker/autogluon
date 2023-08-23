@@ -107,6 +107,10 @@ class LGBModel(AbstractModel):
         if "verbose" not in params:
             params["verbose"] = -1
 
+        self._scale = params.pop("scale_tests", False)
+        self._label_flip_protection = params.pop("label_flip_constraints", False)
+        self._test = params.pop("test", False)
+
         # ----------- DUPLICATE TESTING START -----------
         if params.pop("drop_duplicates", False):
             # Duplicate Code
@@ -372,10 +376,80 @@ class LGBModel(AbstractModel):
         else:
             self.params_trained["num_boost_round"] = self.model.current_iteration()
 
-    def _predict_proba(self, X, num_cpus=0, **kwargs):
+    def _predict_proba(self, X, num_cpus=0, val_label=None, **kwargs):
         X = self.preprocess(X, **kwargs)
 
         y_pred_proba = self.model.predict(X, num_threads=num_cpus)
+
+        if self._label_flip_protection and (val_label is not None):
+            if self.problem_type != BINARY:
+                raise ValueError("Label flip protection is only supported for binary classification so far.")
+
+            stack_features = self.feature_metadata.get_features(required_special_types=['stack'])
+
+            # # -- New idea (noisy average)
+            # float_org_features = self.feature_metadata.get_features(valid_raw_types=['float'], invalid_special_types=['stack'])
+            # s_cs = list(np.arange(-0.1, 0.11, 0.01))
+            # y_counter = 1
+            # del s_cs[10]  # remove zero
+            #
+            # for s_c in s_cs:
+            #     tmp_X = X.copy()
+            #     tmp_X.loc[:, stack_features[0]] += s_c
+            #     y_pred_proba += self.model.predict(tmp_X, num_threads=num_cpus)
+            #     y_counter +=1
+            #
+            # for s_c in s_cs:
+            #     tmp_X = X.copy()
+            #     tmp_X.loc[:, float_org_features] += s_c
+            #     y_pred_proba += self.model.predict(tmp_X, num_threads=num_cpus)
+            #     y_counter +=1
+            #
+            # for s_c in s_cs:
+            #     tmp_X = X.copy()
+            #     tmp_X.loc[:, float_org_features] += s_c
+            #
+            #     for s_c in s_cs:
+            #         tmp_X.loc[:, stack_features[0]] += s_c
+            #         y_pred_proba += self.model.predict(tmp_X, num_threads=num_cpus)
+            #         y_counter += 1
+            #
+            # y_pred_proba /= y_counter
+
+            # -- Old idea
+            # if len(stack_features) != 1:
+            #     # likely take average of errors?
+            #     raise ValueError("No theory for this so far.")
+
+            l2_loss = abs(val_label - y_pred_proba)
+            l1_loss = np.max(abs(X[stack_features].values - val_label.values.reshape(-1, 1)), axis=1)
+            # max okayish but not good enough: stick to this as it sounds most reasonable
+            # min does not work but still works better than nothing interestingly, so there are hard cases...
+            # mean okaish but larger gap afait
+            # median works okazish but fails sometimes I guess
+            # --> this shows that the leak abuses extreme values?
+
+            threshold = 0.15  # maybe learn this or make it an HP
+            # TODO: need to make threshold relative as otherwise high roc auc cases wont be found
+            # and easier to interpreter, by how much % it is allowed to change?
+            if self._test:
+                flipped_mask = abs(l1_loss - l2_loss) >= threshold
+            else:
+                flipped_mask = (l1_loss - l2_loss) >= threshold
+
+            # Note?
+            # this keeps good performance also for monotonic constraints?
+            # can be used to spot it I guess?
+
+            # flipped_mask = np.full(len(y_pred_proba), False)
+            # for stack_col in stack_features:
+            #     flipped_mask = flipped_mask | ((X[stack_col] - y_pred_proba).abs() >= threshold)
+
+            y_pred_proba[flipped_mask] = X.loc[flipped_mask, self.params_aux['best_l1_model']].values
+
+            # flipped_mask = (X[stack_col] - y_pred_proba).abs() >= threshold
+            # y_pred_proba[flipped_mask] = X.loc[flipped_mask, stack_col].values
+
         if self.problem_type == REGRESSION:
             return y_pred_proba
         elif self.problem_type == BINARY:
@@ -415,6 +489,17 @@ class LGBModel(AbstractModel):
                 self._features_internal_list = np.array([self._features_internal_map[feature] for feature in list(X.columns)])
             else:
                 self._features_internal_list = self._features_internal
+
+        #     if self._scale:
+        #         from sklearn.preprocessing import StandardScaler
+        #         self._oof_col_names = self.feature_metadata.get_features(required_special_types=['stack'])
+        #         self._sc = StandardScaler()
+        #         self._sc.fit(X[self._oof_col_names])
+        #
+        # if self._scale:
+        #     X_new = X.copy()
+        #     X_new[self._oof_col_names] = self._sc.transform(X_new[self._oof_col_names])
+        #     X = X_new
 
         if self._requires_remap:
             X_new = X.copy(deep=False)
