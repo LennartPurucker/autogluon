@@ -54,10 +54,12 @@ class LGBModel(AbstractModel):
 
     # Use specialized LightGBM metric if available (fast), otherwise use custom func generator
     def _get_stopping_metric_internal(self):
-        stopping_metric = lgb_utils.convert_ag_metric_to_lgbm(ag_metric_name=self.stopping_metric.name, problem_type=self.problem_type)
+        stopping_metric = lgb_utils.convert_ag_metric_to_lgbm(ag_metric_name=self.stopping_metric.name,
+                                                              problem_type=self.problem_type)
         if stopping_metric is None:
             stopping_metric = lgb_utils.func_generator(
-                metric=self.stopping_metric, is_higher_better=True, needs_pred_proba=not self.stopping_metric.needs_pred, problem_type=self.problem_type
+                metric=self.stopping_metric, is_higher_better=True,
+                needs_pred_proba=not self.stopping_metric.needs_pred, problem_type=self.problem_type
             )
             stopping_metric_name = self.stopping_metric.name
         else:
@@ -70,7 +72,8 @@ class LGBModel(AbstractModel):
         approx_mem_size_req = data_mem_usage * 7 + data_mem_usage / 4 * num_classes  # TODO: Extremely crude approximation, can be vastly improved
         return approx_mem_size_req
 
-    def _fit(self, X, y, X_val=None, y_val=None, time_limit=None, num_gpus=0, num_cpus=0, sample_weight=None, sample_weight_val=None, verbosity=2, **kwargs):
+    def _fit(self, X, y, X_val=None, y_val=None, time_limit=None, num_gpus=0, num_cpus=0, sample_weight=None,
+             sample_weight_val=None, verbosity=2, **kwargs):
         try_import_lightgbm()  # raise helpful error message if LightGBM isn't installed
         start_time = time.time()
         ag_params = self._get_ag_params()
@@ -88,14 +91,16 @@ class LGBModel(AbstractModel):
         stopping_metric, stopping_metric_name = self._get_stopping_metric_internal()
 
         num_boost_round = params.pop("num_boost_round", DEFAULT_NUM_BOOST_ROUND)
-        dart_retrain = params.pop("dart_retrain", False)  # Whether to retrain the model to get optimal iteration if model is trained in 'dart' mode.
+        dart_retrain = params.pop("dart_retrain",
+                                  False)  # Whether to retrain the model to get optimal iteration if model is trained in 'dart' mode.
         if num_gpus != 0:
             if "device" not in params:
                 # TODO: lightgbm must have a special install to support GPU: https://github.com/Microsoft/LightGBM/tree/master/python-package#build-gpu-version
                 #  Before enabling GPU, we should add code to detect that GPU-enabled version is installed and that a valid GPU exists.
                 #  GPU training heavily alters accuracy, often in a negative manner. We will have to be careful about when to use GPU.
                 params["device"] = "gpu"
-                logger.log(20, f"\tTraining {self.name} with GPU, note that this may negatively impact model quality compared to CPU training.")
+                logger.log(20,
+                           f"\tTraining {self.name} with GPU, note that this may negatively impact model quality compared to CPU training.")
         logger.log(15, f"\tFitting {num_boost_round} rounds... Hyperparameters: {params}")
 
         if "num_threads" not in params:
@@ -110,6 +115,15 @@ class LGBModel(AbstractModel):
         self._scale = params.pop("scale_tests", False)
         self._label_flip_protection = params.pop("label_flip_constraints", False)
         self._test = params.pop("test", False)
+
+        if self._label_flip_protection or self._test:
+            stack_f = self.feature_metadata.get_features(required_special_types=['stack'])
+
+            from scripts.leakage_benchmark.src.other.post_hoc_ensembling import caruana_weighted, \
+                roc_auc_binary_loss_proba
+            self._l1_ges_weights, _ = caruana_weighted([np.array(x) for x in X[stack_f].values.T.tolist()],
+                                                       y, 42, 50, roc_auc_binary_loss_proba)
+            self._stack_f = stack_f
 
         # ----------- DUPLICATE TESTING START -----------
         if params.pop("drop_duplicates", False):
@@ -196,7 +210,7 @@ class LGBModel(AbstractModel):
             l2_train_data = l2_train_data[~mask]
             X = l2_train_data.drop(columns=[label])
             y = l2_train_data[label]
-        #----------- DUPLICATE TESTING END ----------
+        # ----------- DUPLICATE TESTING END ----------
 
         # ----------- NOISE TESTING START -----------
         if params.pop("random_noise_for_stack", False):
@@ -210,7 +224,8 @@ class LGBModel(AbstractModel):
         if params.pop("only_correct_instances", False):
 
             if self.num_classes != 2:
-                raise NotImplementedError("only_correct_instances is only implemented for binary classification for now.")
+                raise NotImplementedError(
+                    "only_correct_instances is only implemented for binary classification for now.")
 
             stack_f = self.feature_metadata.get_features(required_special_types=['stack'])
             tmp_X = X[stack_f].copy()
@@ -232,7 +247,8 @@ class LGBModel(AbstractModel):
 
         num_rows_train = len(X)
         dataset_train, dataset_val = self.generate_datasets(
-            X=X, y=y, params=params, X_val=X_val, y_val=y_val, sample_weight=sample_weight, sample_weight_val=sample_weight_val
+            X=X, y=y, params=params, X_val=X_val, y_val=y_val, sample_weight=sample_weight,
+            sample_weight_val=sample_weight_val
         )
         gc.collect()
 
@@ -245,7 +261,8 @@ class LGBModel(AbstractModel):
             # TODO: Better solution: Track trend to early stop when score is far worse than best score, or score is trending worse over time
             early_stopping_rounds = ag_params.get("early_stop", "adaptive")
             if isinstance(early_stopping_rounds, (str, tuple, list)):
-                early_stopping_rounds = self._get_early_stopping_rounds(num_rows_train=num_rows_train, strategy=early_stopping_rounds)
+                early_stopping_rounds = self._get_early_stopping_rounds(num_rows_train=num_rows_train,
+                                                                        strategy=early_stopping_rounds)
             if early_stopping_rounds is None:
                 early_stopping_rounds = 999999
             reporter = kwargs.get("reporter", None)
@@ -339,7 +356,8 @@ class LGBModel(AbstractModel):
             warnings.filterwarnings("ignore", message="Overriding the parameters from Reference Dataset.")
             warnings.filterwarnings("ignore", message="categorical_column in param dict is overridden.")
             try:
-                self.model = train_lgb_model(early_stopping_callback_kwargs=early_stopping_callback_kwargs, **train_params)
+                self.model = train_lgb_model(early_stopping_callback_kwargs=early_stopping_callback_kwargs,
+                                             **train_params)
             except LightGBMError:
                 if train_params["params"].get("device", "cpu") != "gpu":
                     raise
@@ -352,7 +370,8 @@ class LGBModel(AbstractModel):
                         "\tpip install lightgbm --install-option=--gpu"
                     )
                     train_params["params"]["device"] = "cpu"
-                    self.model = train_lgb_model(early_stopping_callback_kwargs=early_stopping_callback_kwargs, **train_params)
+                    self.model = train_lgb_model(early_stopping_callback_kwargs=early_stopping_callback_kwargs,
+                                                 **train_params)
             retrain = False
             if train_params["params"].get("boosting_type", "") == "dart":
                 if dataset_val is not None and dart_retrain and (self.model.best_iteration != num_boost_round):
@@ -381,74 +400,14 @@ class LGBModel(AbstractModel):
 
         y_pred_proba = self.model.predict(X, num_threads=num_cpus)
 
-        if self._label_flip_protection and (val_label is not None):
+        if self._label_flip_protection:
             if self.problem_type != BINARY:
                 raise ValueError("Label flip protection is only supported for binary classification so far.")
+            from scripts.leakage_benchmark.src.other.exp_method_store import current_best
+            current_best(self, X, y_pred_proba, val_label)
 
-            stack_features = self.feature_metadata.get_features(required_special_types=['stack'])
-
-            # # -- New idea (noisy average)
-            # float_org_features = self.feature_metadata.get_features(valid_raw_types=['float'], invalid_special_types=['stack'])
-            # s_cs = list(np.arange(-0.1, 0.11, 0.01))
-            # y_counter = 1
-            # del s_cs[10]  # remove zero
-            #
-            # for s_c in s_cs:
-            #     tmp_X = X.copy()
-            #     tmp_X.loc[:, stack_features[0]] += s_c
-            #     y_pred_proba += self.model.predict(tmp_X, num_threads=num_cpus)
-            #     y_counter +=1
-            #
-            # for s_c in s_cs:
-            #     tmp_X = X.copy()
-            #     tmp_X.loc[:, float_org_features] += s_c
-            #     y_pred_proba += self.model.predict(tmp_X, num_threads=num_cpus)
-            #     y_counter +=1
-            #
-            # for s_c in s_cs:
-            #     tmp_X = X.copy()
-            #     tmp_X.loc[:, float_org_features] += s_c
-            #
-            #     for s_c in s_cs:
-            #         tmp_X.loc[:, stack_features[0]] += s_c
-            #         y_pred_proba += self.model.predict(tmp_X, num_threads=num_cpus)
-            #         y_counter += 1
-            #
-            # y_pred_proba /= y_counter
-
-            # -- Old idea
-            # if len(stack_features) != 1:
-            #     # likely take average of errors?
-            #     raise ValueError("No theory for this so far.")
-
-            l2_loss = abs(val_label - y_pred_proba)
-            l1_loss = np.max(abs(X[stack_features].values - val_label.values.reshape(-1, 1)), axis=1)
-            # max okayish but not good enough: stick to this as it sounds most reasonable
-            # min does not work but still works better than nothing interestingly, so there are hard cases...
-            # mean okaish but larger gap afait
-            # median works okazish but fails sometimes I guess
-            # --> this shows that the leak abuses extreme values?
-
-            threshold = 0.15  # maybe learn this or make it an HP
-            # TODO: need to make threshold relative as otherwise high roc auc cases wont be found
-            # and easier to interpreter, by how much % it is allowed to change?
-            if self._test:
-                flipped_mask = abs(l1_loss - l2_loss) >= threshold
-            else:
-                flipped_mask = (l1_loss - l2_loss) >= threshold
-
-            # Note?
-            # this keeps good performance also for monotonic constraints?
-            # can be used to spot it I guess?
-
-            # flipped_mask = np.full(len(y_pred_proba), False)
-            # for stack_col in stack_features:
-            #     flipped_mask = flipped_mask | ((X[stack_col] - y_pred_proba).abs() >= threshold)
-
-            y_pred_proba[flipped_mask] = X.loc[flipped_mask, self.params_aux['best_l1_model']].values
-
-            # flipped_mask = (X[stack_col] - y_pred_proba).abs() >= threshold
-            # y_pred_proba[flipped_mask] = X.loc[flipped_mask, stack_col].values
+        if self._test:
+            pass
 
         if self.problem_type == REGRESSION:
             return y_pred_proba
@@ -486,7 +445,8 @@ class LGBModel(AbstractModel):
                         self._requires_remap = True
                         break
             if self._requires_remap:
-                self._features_internal_list = np.array([self._features_internal_map[feature] for feature in list(X.columns)])
+                self._features_internal_list = np.array(
+                    [self._features_internal_map[feature] for feature in list(X.columns)])
             else:
                 self._features_internal_list = self._features_internal
 
@@ -508,7 +468,8 @@ class LGBModel(AbstractModel):
         else:
             return X
 
-    def generate_datasets(self, X: DataFrame, y: Series, params, X_val=None, y_val=None, sample_weight=None, sample_weight_val=None, save=False):
+    def generate_datasets(self, X: DataFrame, y: Series, params, X_val=None, y_val=None, sample_weight=None,
+                          sample_weight_val=None, save=False):
         lgb_dataset_params_keys = ["two_round"]  # Keys that are specific to lightGBM Dataset object construction.
         data_params = {key: params[key] for key in lgb_dataset_params_keys if key in params}.copy()
 
@@ -528,7 +489,8 @@ class LGBModel(AbstractModel):
 
         # X, W_train = self.convert_to_weight(X=X)
         dataset_train = construct_dataset(
-            x=X, y=y, location=os.path.join("self.path", "datasets", "train"), params=data_params, save=save, weight=sample_weight
+            x=X, y=y, location=os.path.join("self.path", "datasets", "train"), params=data_params, save=save,
+            weight=sample_weight
         )
         # dataset_train = construct_dataset_lowest_memory(X=X, y=y, location=self.path + 'datasets/train', params=data_params)
         if X_val is not None:
