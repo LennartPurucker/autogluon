@@ -407,7 +407,14 @@ class LGBModel(AbstractModel):
             current_best(self, X, y_pred_proba, val_label)
 
         if self._test:
+            # org_y_pred_proba = y_pred_proba.copy()
+
+
             pass
+
+
+            # -- Count flips
+            # print(f'{sum(org_y_pred_proba != y_pred_proba) / len(y_pred_proba):.3f}', f'Test: {val_label is None}')
 
         if self.problem_type == REGRESSION:
             return y_pred_proba
