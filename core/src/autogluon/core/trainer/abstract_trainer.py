@@ -982,6 +982,11 @@ class AbstractTrainer:
         # The order in which models predict in the cascade. Only used when `cascade=True`
         cascade_order: List[str] = []
 
+        if isinstance(as_reproduction_predictions_args, dict) and ("model_name_to_oof" in as_reproduction_predictions_args):
+            for m_name, m_preds in as_reproduction_predictions_args["model_name_to_oof"].items():
+                model_pred_proba_dict[m_name] = m_preds
+                model_pred_order.remove(m_name)
+
         # Compute model predictions in topological order
         for model_name in model_pred_order:
             if record_pred_time:

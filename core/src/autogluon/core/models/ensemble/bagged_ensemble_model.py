@@ -352,7 +352,7 @@ class BaggedEnsembleModel(AbstractModel):
 
     def _aggregate_bag_predictions(self, X, normalize=None, as_reproduction_predictions_args=None, **kwargs):
 
-        if isinstance(as_reproduction_predictions_args, dict):
+        if isinstance(as_reproduction_predictions_args, dict) and ("y" in as_reproduction_predictions_args):
             if self._cv_splitters:
                 # Idea: obtain the true reproduction score, that is, how good can the model reproduce seen labels.
                 cv_spliter = self._cv_splitters[0]

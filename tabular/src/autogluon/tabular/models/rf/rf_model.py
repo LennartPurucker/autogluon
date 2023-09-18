@@ -241,7 +241,7 @@ class RFModel(AbstractModel):
     def _predict_proba(self, X, as_reproduction_predictions_args=None, **kwargs):
         X = self.preprocess(X, **kwargs)
 
-        if isinstance(as_reproduction_predictions_args, dict):
+        if isinstance(as_reproduction_predictions_args, dict) and ("y" in as_reproduction_predictions_args):
             from sklearn.ensemble._forest import _generate_unsampled_indices, _get_n_samples_bootstrap
             classification_problem = self.problem_type in [BINARY, MULTICLASS]
             X = self.model._validate_X_predict(X)
