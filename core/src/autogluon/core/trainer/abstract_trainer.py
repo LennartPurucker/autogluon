@@ -736,11 +736,11 @@ class AbstractTrainer:
         cascade = isinstance(model, list)
         return self._predict_model(X, model, cascade=cascade)
 
-    def predict_proba(self, X, model=None):
+    def predict_proba(self, X, model=None, as_reproduction_predictions_args=None):
         if model is None:
             model = self._get_best()
         cascade = isinstance(model, list)
-        return self._predict_proba_model(X, model, cascade=cascade)
+        return self._predict_proba_model(X, model, cascade=cascade, as_reproduction_predictions_args=as_reproduction_predictions_args)
 
     def _get_best(self):
         if self.model_best is not None:
@@ -748,13 +748,14 @@ class AbstractTrainer:
         else:
             return self.get_model_best()
 
-    def get_pred_proba_from_model(self, model, X, model_pred_proba_dict=None, cascade=False):
+    def get_pred_proba_from_model(self, model, X, model_pred_proba_dict=None, cascade=False, as_reproduction_predictions_args=None):
         if isinstance(model, list):
             models = model
             model = models[-1]
         else:
             models = [model]
-        model_pred_proba_dict = self.get_model_pred_proba_dict(X=X, models=models, model_pred_proba_dict=model_pred_proba_dict, cascade=cascade)
+        model_pred_proba_dict = self.get_model_pred_proba_dict(X=X, models=models, model_pred_proba_dict=model_pred_proba_dict, cascade=cascade,
+                                                               as_reproduction_predictions_args=as_reproduction_predictions_args)
         if not isinstance(model, str):
             model = model.name
         return model_pred_proba_dict[model]
@@ -891,6 +892,7 @@ class AbstractTrainer:
         use_val_cache: bool = False,
         cascade: bool = False,
         cascade_threshold: float = 0.9,
+        as_reproduction_predictions_args: dict | None = None,
     ):
         """
         Optimally computes pred_probas (or predictions if regression) for each model in `models`.
@@ -1003,9 +1005,9 @@ class AbstractTrainer:
                     preprocess_kwargs = dict(infer=False, model_pred_proba_dict=cascade_dict)
                 else:
                     preprocess_kwargs = dict(infer=False, model_pred_proba_dict=model_pred_proba_dict)
-                model_pred_proba_dict[model_name] = model.predict_proba(X, **preprocess_kwargs)
+                model_pred_proba_dict[model_name] = model.predict_proba(X, as_reproduction_predictions_args=as_reproduction_predictions_args, **preprocess_kwargs)
             else:
-                model_pred_proba_dict[model_name] = model.predict_proba(X)
+                model_pred_proba_dict[model_name] = model.predict_proba(X, as_reproduction_predictions_args=as_reproduction_predictions_args)
 
             if record_pred_time:
                 time_end = time.time()
@@ -2436,8 +2438,9 @@ class AbstractTrainer:
         y_pred_proba = self._predict_proba_model(X=X, model=model, model_pred_proba_dict=model_pred_proba_dict, cascade=cascade)
         return get_pred_from_proba(y_pred_proba=y_pred_proba, problem_type=self.problem_type)
 
-    def _predict_proba_model(self, X, model, model_pred_proba_dict=None, cascade=False):
-        return self.get_pred_proba_from_model(model=model, X=X, model_pred_proba_dict=model_pred_proba_dict, cascade=cascade)
+    def _predict_proba_model(self, X, model, model_pred_proba_dict=None, cascade=False, as_reproduction_predictions_args=None):
+        return self.get_pred_proba_from_model(model=model, X=X, model_pred_proba_dict=model_pred_proba_dict, cascade=cascade,
+                                              as_reproduction_predictions_args=as_reproduction_predictions_args)
 
     def _proxy_model_feature_prune(
         self, model_fit_kwargs: dict, time_limit: float, layer_fit_time: float, level: int, features: List[str], **feature_prune_kwargs: dict

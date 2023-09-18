@@ -1578,6 +1578,7 @@ class TabularPredictor:
         as_pandas: bool = True,
         as_multiclass: bool = True,
         transform_features: bool = True,
+        as_reproduction_predictions_args: dict | None = None,
     ):
         """
         Use trained models to produce predicted class probabilities rather than class-labels (if task is classification).
@@ -1606,6 +1607,8 @@ class TabularPredictor:
             If True, preprocesses data before predicting with models.
             If False, skips global feature preprocessing.
                 This is useful to save on inference time if you have already called `data = predictor.transform_features(data)`.
+        reproduction_predictions TODO
+            TODO
 
         Returns
         -------
@@ -1621,7 +1624,8 @@ class TabularPredictor:
                 f"You can check the value of `predictor.can_predict_proba` to tell if predict_proba is valid."
             )
         data = self._get_dataset(data)
-        return self._learner.predict_proba(X=data, model=model, as_pandas=as_pandas, as_multiclass=as_multiclass, transform_features=transform_features)
+        return self._learner.predict_proba(X=data, model=model, as_pandas=as_pandas, as_multiclass=as_multiclass, transform_features=transform_features,
+                                           as_reproduction_predictions_args=as_reproduction_predictions_args)
 
     def get_pred_from_proba(self, y_pred_proba: pd.DataFrame | np.ndarray, decision_threshold: float | None = None) -> pd.Series | np.array:
         """

@@ -341,18 +341,61 @@ class BaggedEnsembleModel(AbstractModel):
             raise ValueError(f"k_fold must equal previously fit k_fold value for the current n_repeat, values: (({k_fold}, {self._k})")
 
     def predict_proba(self, X, normalize=None, **kwargs):
-        model = self.load_child(self.models[0])
-        X = self.preprocess(X, model=model, **kwargs)
-        pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
-        for model in self.models[1:]:
-            model = self.load_child(model)
-            pred_proba += model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
-        pred_proba = pred_proba / len(self.models)
+        pred_proba = self._aggregate_bag_predictions(X, normalize=normalize, **kwargs)
 
         if self.params_aux.get("temperature_scalar", None) is not None:
             pred_proba = self._apply_temperature_scaling(pred_proba)
         elif self.conformalize is not None:
             pred_proba = self._apply_conformalization(pred_proba)
+
+        return pred_proba
+
+    def _aggregate_bag_predictions(self, X, normalize=None, as_reproduction_predictions_args=None, **kwargs):
+
+        if isinstance(as_reproduction_predictions_args, dict):
+            if self._cv_splitters:
+                # Idea: obtain the true reproduction score, that is, how good can the model reproduce seen labels.
+                cv_spliter = self._cv_splitters[0]
+                y = as_reproduction_predictions_args["y"]
+                fold_fit_args_list, *_ = self._generate_fold_configs(X=X, y=y,
+                    cv_splitter=cv_spliter,
+                    k_fold_start=0,
+                    k_fold_end=cv_spliter.n_splits,
+                    n_repeat_start=0,
+                    n_repeat_end=cv_spliter.n_repeats,
+                )
+
+                pred_proba = 0
+                for fold_args in fold_fit_args_list:
+                    model = self.load_child(fold_args["model_name_suffix"])
+
+                    # Init preprocess
+                    if isinstance(pred_proba, int):
+                        X = self.preprocess(X, model=model, **kwargs)
+
+                    tmp_pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+                    # Remove predictions from models that have not seen these instances before.
+                    tmp_pred_proba[fold_args["fold"][1]] = 0
+                    pred_proba += tmp_pred_proba
+
+                # As we remove one fold model per repeat per instance need to adjust the denominator
+                pred_proba = pred_proba / (len(self.models) - cv_spliter.n_repeats)
+            else:
+                # Single model bagging ensemble (RF, etc.)
+                if len(self.models) != 1:
+                    raise NotImplementedError("Unknown case for reproduction score.")
+                model = self.load_child(self.models[0])
+                X = self.preprocess(X, model=model, **kwargs)
+                pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize,
+                                                 as_reproduction_predictions_args=as_reproduction_predictions_args)
+        else:
+            model = self.load_child(self.models[0])
+            X = self.preprocess(X, model=model, **kwargs)
+            pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+            for model in self.models[1:]:
+                model = self.load_child(model)
+                pred_proba += model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+            pred_proba = pred_proba / len(self.models)
 
         return pred_proba
 
