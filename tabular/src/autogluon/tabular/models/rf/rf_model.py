@@ -242,10 +242,15 @@ class RFModel(AbstractModel):
         X = self.preprocess(X, **kwargs)
 
         if isinstance(as_reproduction_predictions_args, dict) and ("y" in as_reproduction_predictions_args):
-            from sklearn.ensemble._forest import _generate_unsampled_indices, _get_n_samples_bootstrap
+            from sklearn.ensemble._forest import (
+                _generate_sample_indices,
+                _generate_unsampled_indices,
+                _get_n_samples_bootstrap,
+            )
             classification_problem = self.problem_type in [BINARY, MULTICLASS]
             X = self.model._validate_X_predict(X)
             y = as_reproduction_predictions_args["y"]
+            inverse_models = as_reproduction_predictions_args.get("inverse_models", False)
 
             n_samples = y.shape[0]
             n_samples_bootstrap = _get_n_samples_bootstrap(n_samples,self.model.max_samples)
@@ -253,20 +258,28 @@ class RFModel(AbstractModel):
             denominator = np.full(n_samples, len(self.model.estimators_))
 
             for est_i, estimator in enumerate(self.model.estimators_):
-                unsampled_indices = _generate_unsampled_indices(
-                    estimator.random_state,
-                    n_samples,
-                    n_samples_bootstrap,
-                )
+                if inverse_models:
+                    indices = _generate_sample_indices(
+                        estimator.random_state,
+                        n_samples,
+                        n_samples_bootstrap,
+                    )
+                else:
+                    indices = _generate_unsampled_indices(
+                        estimator.random_state,
+                        n_samples,
+                        n_samples_bootstrap,
+                    )
 
                 if classification_problem:
                     tmp_pred = estimator.predict_proba(X)
                 else:
                     tmp_pred = estimator.predict(X)
+
                 # Remove predictions from models that have not seen these instances before.
-                tmp_pred[unsampled_indices] = 0
-                # update denominator
-                denominator[unsampled_indices] -= 1
+                tmp_pred[indices] = 0
+                denominator[indices] -= 1
+
                 pred += tmp_pred
 
             pred /= denominator[:, None]

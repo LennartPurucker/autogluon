@@ -357,6 +357,7 @@ class BaggedEnsembleModel(AbstractModel):
                 # Idea: obtain the true reproduction score, that is, how good can the model reproduce seen labels.
                 cv_spliter = self._cv_splitters[0]
                 y = as_reproduction_predictions_args["y"]
+                inverse_models = as_reproduction_predictions_args.get("inverse_models", False)
                 fold_fit_args_list, *_ = self._generate_fold_configs(X=X, y=y,
                     cv_splitter=cv_spliter,
                     k_fold_start=0,
@@ -375,11 +376,15 @@ class BaggedEnsembleModel(AbstractModel):
 
                     tmp_pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
                     # Remove predictions from models that have not seen these instances before.
-                    tmp_pred_proba[fold_args["fold"][1]] = 0
+                    if inverse_models:
+                        tmp_pred_proba[fold_args["fold"][0]] = 0
+                    else:
+                        tmp_pred_proba[fold_args["fold"][1]] = 0
                     pred_proba += tmp_pred_proba
 
                 # As we remove one fold model per repeat per instance need to adjust the denominator
-                pred_proba = pred_proba / (len(self.models) - cv_spliter.n_repeats)
+                denominator = cv_spliter.n_repeats if inverse_models else (len(self.models) - cv_spliter.n_repeats)
+                pred_proba = pred_proba / denominator
             else:
                 # Single model bagging ensemble (RF, etc.)
                 if len(self.models) != 1:
