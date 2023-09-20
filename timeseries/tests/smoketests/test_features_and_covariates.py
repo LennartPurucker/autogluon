@@ -58,7 +58,7 @@ def generate_train_and_test_data(
 @pytest.mark.parametrize("use_known_covariates", [True, False])
 @pytest.mark.parametrize("use_static_features_continuous", [True, False])
 @pytest.mark.parametrize("use_static_features_categorical", [True, False])
-@pytest.mark.parametrize("eval_metric", ["mean_wQuantileLoss", "MASE"])
+@pytest.mark.parametrize("eval_metric", ["WQL", "MASE"])
 def test_predictor_smoke_test(
     use_known_covariates,
     use_past_covariates,
@@ -79,8 +79,8 @@ def test_predictor_smoke_test(
         "TemporalFusionTransformer": DUMMY_MODEL_HPARAMS,
         "Theta": {},
         # Override default hyperparameters for faster training
-        "AutoARIMA": {"max_p": 2},
-        "AutoETS": {"model": "AAA"},
+        "AutoARIMA": {"max_p": 2, "use_fallback_model": False},
+        "AutoETS": {"model": "AAA", "use_fallback_model": False},
     }
 
     train_data, test_data = generate_train_and_test_data(

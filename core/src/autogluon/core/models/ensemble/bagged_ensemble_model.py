@@ -61,6 +61,14 @@ class BaggedEnsembleModel(AbstractModel):
 
     def __init__(self, model_base: Union[AbstractModel, Type[AbstractModel]], model_base_kwargs: Dict[str, any] = None, random_state: int = 0, **kwargs):
         if inspect.isclass(model_base):
+            # TODO: Test
+            if ("hyperparameters" in kwargs) and kwargs["hyperparameters"].get("nested", False):
+                model_base, model_base_kwargs, kwargs = self._convert_to_nested(
+                    model_base=model_base,
+                    model_base_kwargs=model_base_kwargs,
+                    random_state=random_state,
+                    kwargs=kwargs,
+                )
             if model_base_kwargs is None:
                 model_base_kwargs = dict()
             self.model_base: AbstractModel = model_base(**model_base_kwargs)
@@ -98,6 +106,10 @@ class BaggedEnsembleModel(AbstractModel):
             # 'refit_folds': False,  # [Advanced, Experimental] Whether to refit bags immediately to a refit_full model in a single .fit call.
             # 'num_folds' None,  # Number of bagged folds per set. If specified, overrides .fit `k_fold` value.
             # 'max_sets': None,  # Maximum bagged repeats to allow, if specified, will set `self.can_fit()` to `self._n_repeats_finished < max_repeats`
+            # 'fold_fitting_strategy': "auto",  # The fold fitting strategy to use. Defaults to "sequential_local" if `nested=True`
+            # 'nested': False,  # [Advanced] Whether to perform nested bagging
+            # 'nested_fold_fitting_strategy': "auto",  # When `nested=True`, the fold fitting strategy to use in the inner bag.
+            # 'nested_num_folds': 8,  # When `nested=True`, the number of folds in the inner bag.
         }
         for param, val in default_params.items():
             self._set_default_param_value(param, val)
@@ -110,6 +122,57 @@ class BaggedEnsembleModel(AbstractModel):
         )
         default_auxiliary_params.update(extra_auxiliary_params)
         return default_auxiliary_params
+
+    @staticmethod
+    def _convert_to_nested(model_base: Type[AbstractModel], model_base_kwargs: Dict[str, any], kwargs: Dict[str, any], random_state: int):
+        """
+        Convert the given inputs to nested bag versions.
+        Will wrap the model_base into a BaggedEnsembleModel, leading to nested bagging.
+
+        Relevant hyperparameters:
+            fold_fitting_strategy : The fold fitting strategy to do in the outer bag.
+                Set to "sequential_local" if not specified to avoid parallelizing both outer and inner bags at the same time.
+                Note: Paralleling the outer bag while making the inner bag sequential can lead to the process hanging.
+            nested_fold_fitting_strategy : The fold fitting strategy to do in the inner bag. Uses model defaults if not specified.
+            nested_num_folds : The number of folds to fit in the inner bag. Defaults to 8 if not specified.
+
+        Parameters
+        ----------
+        model_base : Type[AbstractModel]
+            The model class to use inside the bag.
+        model_base_kwargs : Dict[str, any]
+            kwargs used to initialize model_base if model_base is a class.
+        kwargs : Dict[str, any]
+            The bag init kwargs parameters.
+        random_state : int
+            The bag init random_state parameter.
+
+        Returns
+        -------
+        model_base, model_base_kwargs, kwargs
+            Updated versions of the input arguments, now as nested bags.
+
+        """
+        print(random_state)
+        nested_num_folds = kwargs["hyperparameters"].get("nested_num_folds", 8)
+        assert isinstance(nested_num_folds, int)
+        assert nested_num_folds >= 2
+        if "fold_fitting_strategy" not in kwargs["hyperparameters"]:
+            kwargs["hyperparameters"]["fold_fitting_strategy"] = "sequential_local"
+        nested_fold_fitting_strategy = kwargs["hyperparameters"].get("nested_fold_fitting_strategy", None)
+        nested_inner_hyperparameters = dict(num_folds=nested_num_folds)
+        if nested_fold_fitting_strategy is not None:
+            nested_inner_hyperparameters["fold_fitting_strategy"] = nested_fold_fitting_strategy
+        model_base_kwargs = dict(
+            path=kwargs["path"],
+            name="BaggedEnsemble",
+            model_base=model_base,
+            model_base_kwargs=model_base_kwargs,
+            random_state=random_state,
+            hyperparameters=nested_inner_hyperparameters,
+        )
+        model_base = BaggedEnsembleModel
+        return model_base, model_base_kwargs, kwargs
 
     def is_valid(self):
         return self.is_fit() and (self._n_repeats == self._n_repeats_finished)
@@ -875,6 +938,7 @@ class BaggedEnsembleModel(AbstractModel):
         """
         init_args = self.get_params()
         init_args["hyperparameters"]["save_bag_folds"] = True  # refit full models must save folds
+        init_args["hyperparameters"].pop("num_folds", 0)  # refit full models should not have num_folds specified
         init_args["model_base"] = self.convert_to_refit_full_template_child()
         if name_suffix:
             init_args["name"] = init_args["name"] + name_suffix
