@@ -153,7 +153,6 @@ class BaggedEnsembleModel(AbstractModel):
             Updated versions of the input arguments, now as nested bags.
 
         """
-        print(random_state)
         nested_num_folds = kwargs["hyperparameters"].get("nested_num_folds", 8)
         assert isinstance(nested_num_folds, int)
         assert nested_num_folds >= 2
@@ -163,6 +162,10 @@ class BaggedEnsembleModel(AbstractModel):
         nested_inner_hyperparameters = dict(num_folds=nested_num_folds)
         if nested_fold_fitting_strategy is not None:
             nested_inner_hyperparameters["fold_fitting_strategy"] = nested_fold_fitting_strategy
+        # Transfer non-bagging-model-specific parameters to the nested model (might need to do this for a few other HPs as well)
+        use_child_oof = kwargs["hyperparameters"].pop("use_child_oof", None)
+        if use_child_oof is not None:
+            nested_inner_hyperparameters["use_child_oof"] = use_child_oof
         model_base_kwargs = dict(
             path=kwargs["path"],
             name="BaggedEnsemble",
@@ -416,7 +419,9 @@ class BaggedEnsembleModel(AbstractModel):
     def _aggregate_bag_predictions(self, X, normalize=None, as_reproduction_predictions_args=None, **kwargs):
 
         if isinstance(as_reproduction_predictions_args, dict) and ("y" in as_reproduction_predictions_args):
+            # print('called', self.name)
             if self._cv_splitters:
+                # print('cv splitter')
                 # Idea: obtain the true reproduction score, that is, how good can the model reproduce seen labels.
                 cv_spliter = self._cv_splitters[0]
                 y = as_reproduction_predictions_args["y"]
@@ -437,6 +442,8 @@ class BaggedEnsembleModel(AbstractModel):
                     if isinstance(pred_proba, int):
                         X = self.preprocess(X, model=model, **kwargs)
 
+                    # as_reproduction_predictions_args is not passed to the child model on purpose, as it would need to
+                    # be nested model to have an affect and a nested model does not affect the leak
                     tmp_pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
                     # Remove predictions from models that have not seen these instances before.
                     if inverse_models:
@@ -449,6 +456,7 @@ class BaggedEnsembleModel(AbstractModel):
                 denominator = cv_spliter.n_repeats if inverse_models else (len(self.models) - cv_spliter.n_repeats)
                 pred_proba = pred_proba / denominator
             else:
+                # print('single model')
                 # Single model bagging ensemble (RF, etc.)
                 if len(self.models) != 1:
                     raise NotImplementedError("Unknown case for reproduction score.")
