@@ -2729,7 +2729,8 @@ class TabularPredictor:
     # TODO: Move code logic to learner/trainer
     # TODO: Add fit() arg to perform this automatically at end of training
     # TODO: Consider adding cutoff arguments such as top-k models
-    def fit_weighted_ensemble(self, base_models: list = None, name_suffix="Best", expand_pareto_frontier=False, time_limit=None, refit_full=False):
+    def fit_weighted_ensemble(self, base_models: list = None, name_suffix="Best", expand_pareto_frontier=False, time_limit=None, refit_full=False,
+                              new_data = None, base_models_level=None):
         """
         Fits new weighted ensemble models to combine predictions of previously-trained models.
         `cache_data` must have been set to `True` during the original training to enable this functionality.
@@ -2763,7 +2764,13 @@ class TabularPredictor:
         self._assert_is_fit("fit_weighted_ensemble")
         trainer = self._learner.load_trainer()
 
-        if trainer.bagged_mode:
+        use_val_cache= True
+        if new_data is not None:
+            X = new_data[0]
+            y = new_data[1]
+            fit = False
+            use_val_cache = False
+        elif trainer.bagged_mode:
             X = trainer.load_X()
             y = trainer.load_y()
             fit = True
@@ -2774,9 +2781,9 @@ class TabularPredictor:
 
         stack_name = "aux1"
         if base_models is None:
-            base_models = trainer.get_model_names(stack_name="core")
+            base_models = trainer.get_model_names(stack_name="core", level=base_models_level)
 
-        X_stack_preds = trainer.get_inputs_to_stacker(X=X, base_models=base_models, fit=fit, use_orig_features=False, use_val_cache=True)
+        X_stack_preds = trainer.get_inputs_to_stacker(X=X, base_models=base_models, fit=fit, use_orig_features=False, use_val_cache=use_val_cache)
 
         models = []
 
@@ -2799,7 +2806,7 @@ class TabularPredictor:
                     time_limit=time_limit,
                 )
 
-        max_base_model_level = max([trainer.get_model_level(base_model) for base_model in base_models])
+        max_base_model_level = max([trainer.get_model_level(base_model) for base_model in base_models]) if base_models_level is None else base_models_level
         weighted_ensemble_level = max_base_model_level + 1
         models += trainer.generate_weighted_ensemble(
             X=X_stack_preds,
