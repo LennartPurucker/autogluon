@@ -5,6 +5,7 @@ from autogluon.common.features.types import S_STACK
 from ...constants import MULTICLASS, QUANTILE, SOFTCLASS
 from ..abstract.abstract_model import AbstractModel
 from .ensemble_selection import EnsembleSelection, SimpleWeightedEnsemble
+from .population_based_ensemble_selection.qo_ensemble_selection import QOEnsembleSelection
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class GreedyWeightedEnsembleModel(AbstractModel):
         self.weights_ = None
 
     def _set_default_params(self):
-        default_params = {"ensemble_size": 100}
+        default_params = {"n_iterations": 100}
         for param, val in default_params.items():
             self._set_default_param_value(param, val)
 
@@ -56,7 +57,7 @@ class GreedyWeightedEnsembleModel(AbstractModel):
             self.model = self.model.fit(X, y, time_limit=time_limit, sample_weight=sample_weight)
             self.base_model_names, self.model.weights_ = self.remove_zero_weight_models(self.base_model_names, self.model.weights_)
         self.features = self._set_stack_columns(base_model_names=self.base_model_names)
-        self.params_trained["ensemble_size"] = self.model.ensemble_size
+        self.params_trained["ensemble_size"] = self.model.n_iterations
         self.weights_ = self.model.weights_
 
     def convert_pred_probas_df_to_list(self, pred_probas_df) -> list:
@@ -140,3 +141,12 @@ class SimpleWeightedEnsembleModel(GreedyWeightedEnsembleModel):
             self.base_model_names, self.model.weights_ = self.remove_zero_weight_models(self.base_model_names, self.model.weights_)
         self.features = self._set_stack_columns(base_model_names=self.base_model_names)
         self.weights_ = self.model.weights_
+
+
+class QOWeightedEnsembleModel(GreedyWeightedEnsembleModel):
+    def __init__(self, base_model_names=None, model_base=QOEnsembleSelection, **kwargs):
+        super().__init__(**kwargs)
+        self.model_base = model_base
+        self.num_pred_cols_per_model = None
+        self.base_model_names = base_model_names
+        self.weights_ = None

@@ -18,6 +18,7 @@ from autogluon.core.models import (
     AbstractModel,
     DummyModel,
     GreedyWeightedEnsembleModel,
+    QOWeightedEnsembleModel,
     SimpleWeightedEnsembleModel,
     StackerEnsembleModel,
 )
@@ -115,6 +116,7 @@ MODEL_TYPES = dict(
     TABPFN=TabPFNModel,
     FASTTEXT=FastTextModel,
     ENS_WEIGHTED=GreedyWeightedEnsembleModel,
+    QO_ENS_WEIGHTED=QOWeightedEnsembleModel,
     SIMPLE_ENS_WEIGHTED=SimpleWeightedEnsembleModel,
     # interpretable models
     IM_RULEFIT=RuleFitModel,
@@ -147,6 +149,7 @@ DEFAULT_MODEL_NAMES = {
     FastTextModel: "FastText",
     VowpalWabbitModel: "VowpalWabbit",
     GreedyWeightedEnsembleModel: "WeightedEnsemble",
+    QOWeightedEnsembleModel: "QOWeightedEnsemble",
     SimpleWeightedEnsembleModel: "WeightedEnsemble",
     # Interpretable models
     RuleFitModel: "RuleFit",

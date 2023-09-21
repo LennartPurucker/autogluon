@@ -1651,10 +1651,11 @@ class AbstractTrainer:
 
         base_model_paths_dict = self.get_models_attribute_dict(attribute="path", models=base_model_names)
         base_model_paths_dict = {key: os.path.join(self.path, val) for key, val in base_model_paths_dict.items()}
-        weighted_ensemble_model, _ = get_models_func(
+        weighted_ensemble_models, _ = get_models_func(
             hyperparameters={
                 "default": {
                     "ENS_WEIGHTED": [child_hyperparameters],
+                    "QO_ENS_WEIGHTED": [child_hyperparameters],
                 }
             },
             ensemble_type=WeightedEnsembleModel,
@@ -1673,7 +1674,7 @@ class AbstractTrainer:
             name_suffix=name_suffix,
             level=level,
         )
-        weighted_ensemble_model = weighted_ensemble_model[0]
+        #weighted_ensemble_model = weighted_ensemble_model[0]
         w = None
         if self.weight_evaluation:
             X, w = extract_column(X, self.sample_weight)
@@ -1682,7 +1683,7 @@ class AbstractTrainer:
             y=y,
             X_val=None,
             y_val=None,
-            models=[weighted_ensemble_model],
+            models=weighted_ensemble_models,
             k_fold=k_fold,
             n_repeats=n_repeats,
             hyperparameter_tune_kwargs=None,

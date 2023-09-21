@@ -25,11 +25,19 @@ class AbstractWeightedEnsemble:
         preds_ensemble = np.sum(preds_norm, axis=0)
         return preds_ensemble
 
+    def _calculate_regret(self, y_true, y_pred_proba, metric, sample_weight=None):
+        if metric.needs_pred or metric.needs_quantile:
+            preds = get_pred_from_proba(y_pred_proba=y_pred_proba, problem_type=self.problem_type)
+        else:
+            preds = y_pred_proba
+        score = compute_weighted_metric(y_true, preds, metric, sample_weight, quantile_levels=self.quantile_levels)
+        return metric._optimum - score
+
 
 class EnsembleSelection(AbstractWeightedEnsemble):
     def __init__(
         self,
-        ensemble_size: int,
+        n_iterations: int,
         problem_type: str,
         metric,
         sorted_initialization: bool = False,
@@ -38,7 +46,8 @@ class EnsembleSelection(AbstractWeightedEnsemble):
         random_state: np.random.RandomState = None,
         **kwargs,
     ):
-        self.ensemble_size = ensemble_size
+        self.ensemble_size = n_iterations
+        self.n_iterations = n_iterations
         self.problem_type = problem_type
         self.metric = metric
         self.sorted_initialization = sorted_initialization
@@ -186,14 +195,6 @@ class EnsembleSelection(AbstractWeightedEnsemble):
             self.train_score_ = trajectory[-1]
 
         logger.debug("Ensemble indices: " + str(self.indices_))
-
-    def _calculate_regret(self, y_true, y_pred_proba, metric, sample_weight=None):
-        if metric.needs_pred or metric.needs_quantile:
-            preds = get_pred_from_proba(y_pred_proba=y_pred_proba, problem_type=self.problem_type)
-        else:
-            preds = y_pred_proba
-        score = compute_weighted_metric(y_true, preds, metric, sample_weight, quantile_levels=self.quantile_levels)
-        return metric._optimum - score
 
     def _calculate_weights(self):
         ensemble_members = Counter(self.indices_).most_common()
