@@ -61,6 +61,14 @@ class BaggedEnsembleModel(AbstractModel):
 
     def __init__(self, model_base: Union[AbstractModel, Type[AbstractModel]], model_base_kwargs: Dict[str, any] = None, random_state: int = 0, **kwargs):
         if inspect.isclass(model_base):
+            # TODO: Test
+            if ("hyperparameters" in kwargs) and kwargs["hyperparameters"].get("nested", False):
+                model_base, model_base_kwargs, kwargs = self._convert_to_nested(
+                    model_base=model_base,
+                    model_base_kwargs=model_base_kwargs,
+                    random_state=random_state,
+                    kwargs=kwargs,
+                )
             if model_base_kwargs is None:
                 model_base_kwargs = dict()
             self.model_base: AbstractModel = model_base(**model_base_kwargs)
@@ -98,6 +106,10 @@ class BaggedEnsembleModel(AbstractModel):
             # 'refit_folds': False,  # [Advanced, Experimental] Whether to refit bags immediately to a refit_full model in a single .fit call.
             # 'num_folds' None,  # Number of bagged folds per set. If specified, overrides .fit `k_fold` value.
             # 'max_sets': None,  # Maximum bagged repeats to allow, if specified, will set `self.can_fit()` to `self._n_repeats_finished < max_repeats`
+            # 'fold_fitting_strategy': "auto",  # The fold fitting strategy to use. Defaults to "sequential_local" if `nested=True`
+            # 'nested': False,  # [Advanced] Whether to perform nested bagging
+            # 'nested_fold_fitting_strategy': "auto",  # When `nested=True`, the fold fitting strategy to use in the inner bag.
+            # 'nested_num_folds': 8,  # When `nested=True`, the number of folds in the inner bag.
         }
         for param, val in default_params.items():
             self._set_default_param_value(param, val)
@@ -110,6 +122,60 @@ class BaggedEnsembleModel(AbstractModel):
         )
         default_auxiliary_params.update(extra_auxiliary_params)
         return default_auxiliary_params
+
+    @staticmethod
+    def _convert_to_nested(model_base: Type[AbstractModel], model_base_kwargs: Dict[str, any], kwargs: Dict[str, any], random_state: int):
+        """
+        Convert the given inputs to nested bag versions.
+        Will wrap the model_base into a BaggedEnsembleModel, leading to nested bagging.
+
+        Relevant hyperparameters:
+            fold_fitting_strategy : The fold fitting strategy to do in the outer bag.
+                Set to "sequential_local" if not specified to avoid parallelizing both outer and inner bags at the same time.
+                Note: Paralleling the outer bag while making the inner bag sequential can lead to the process hanging.
+            nested_fold_fitting_strategy : The fold fitting strategy to do in the inner bag. Uses model defaults if not specified.
+            nested_num_folds : The number of folds to fit in the inner bag. Defaults to 8 if not specified.
+
+        Parameters
+        ----------
+        model_base : Type[AbstractModel]
+            The model class to use inside the bag.
+        model_base_kwargs : Dict[str, any]
+            kwargs used to initialize model_base if model_base is a class.
+        kwargs : Dict[str, any]
+            The bag init kwargs parameters.
+        random_state : int
+            The bag init random_state parameter.
+
+        Returns
+        -------
+        model_base, model_base_kwargs, kwargs
+            Updated versions of the input arguments, now as nested bags.
+
+        """
+        nested_num_folds = kwargs["hyperparameters"].get("nested_num_folds", 8)
+        assert isinstance(nested_num_folds, int)
+        assert nested_num_folds >= 2
+        if "fold_fitting_strategy" not in kwargs["hyperparameters"]:
+            kwargs["hyperparameters"]["fold_fitting_strategy"] = "sequential_local"
+        nested_fold_fitting_strategy = kwargs["hyperparameters"].get("nested_fold_fitting_strategy", None)
+        nested_inner_hyperparameters = dict(num_folds=nested_num_folds)
+        if nested_fold_fitting_strategy is not None:
+            nested_inner_hyperparameters["fold_fitting_strategy"] = nested_fold_fitting_strategy
+        # Transfer non-bagging-model-specific parameters to the nested model (might need to do this for a few other HPs as well)
+        use_child_oof = kwargs["hyperparameters"].pop("use_child_oof", None)
+        if use_child_oof is not None:
+            nested_inner_hyperparameters["use_child_oof"] = use_child_oof
+        model_base_kwargs = dict(
+            path=kwargs["path"],
+            name="BaggedEnsemble",
+            model_base=model_base,
+            model_base_kwargs=model_base_kwargs,
+            random_state=random_state,
+            hyperparameters=nested_inner_hyperparameters,
+        )
+        model_base = BaggedEnsembleModel
+        return model_base, model_base_kwargs, kwargs
 
     def is_valid(self):
         return self.is_fit() and (self._n_repeats == self._n_repeats_finished)
@@ -341,18 +407,71 @@ class BaggedEnsembleModel(AbstractModel):
             raise ValueError(f"k_fold must equal previously fit k_fold value for the current n_repeat, values: (({k_fold}, {self._k})")
 
     def predict_proba(self, X, normalize=None, **kwargs):
-        model = self.load_child(self.models[0])
-        X = self.preprocess(X, model=model, **kwargs)
-        pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
-        for model in self.models[1:]:
-            model = self.load_child(model)
-            pred_proba += model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
-        pred_proba = pred_proba / len(self.models)
+        pred_proba = self._aggregate_bag_predictions(X, normalize=normalize, **kwargs)
 
         if self.params_aux.get("temperature_scalar", None) is not None:
             pred_proba = self._apply_temperature_scaling(pred_proba)
         elif self.conformalize is not None:
             pred_proba = self._apply_conformalization(pred_proba)
+
+        return pred_proba
+
+    def _aggregate_bag_predictions(self, X, normalize=None, as_reproduction_predictions_args=None, **kwargs):
+
+        if isinstance(as_reproduction_predictions_args, dict) and ("y" in as_reproduction_predictions_args):
+            # print('called', self.name)
+            if self._cv_splitters:
+                # print('cv splitter')
+                # Idea: obtain the true reproduction score, that is, how good can the model reproduce seen labels.
+                cv_spliter = self._cv_splitters[0]
+                y = as_reproduction_predictions_args["y"]
+                inverse_models = as_reproduction_predictions_args.get("inverse_models", False)
+                fold_fit_args_list, *_ = self._generate_fold_configs(X=X, y=y,
+                    cv_splitter=cv_spliter,
+                    k_fold_start=0,
+                    k_fold_end=cv_spliter.n_splits,
+                    n_repeat_start=0,
+                    n_repeat_end=cv_spliter.n_repeats,
+                )
+
+                pred_proba = 0
+                for fold_args in fold_fit_args_list:
+                    model = self.load_child(fold_args["model_name_suffix"])
+
+                    # Init preprocess
+                    if isinstance(pred_proba, int):
+                        X = self.preprocess(X, model=model, **kwargs)
+
+                    # as_reproduction_predictions_args is not passed to the child model on purpose, as it would need to
+                    # be nested model to have an affect and a nested model does not affect the leak
+                    tmp_pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+                    # Remove predictions from models that have not seen these instances before.
+                    if inverse_models:
+                        tmp_pred_proba[fold_args["fold"][0]] = 0
+                    else:
+                        tmp_pred_proba[fold_args["fold"][1]] = 0
+                    pred_proba += tmp_pred_proba
+
+                # As we remove one fold model per repeat per instance need to adjust the denominator
+                denominator = cv_spliter.n_repeats if inverse_models else (len(self.models) - cv_spliter.n_repeats)
+                pred_proba = pred_proba / denominator
+            else:
+                # print('single model')
+                # Single model bagging ensemble (RF, etc.)
+                if len(self.models) != 1:
+                    raise NotImplementedError("Unknown case for reproduction score.")
+                model = self.load_child(self.models[0])
+                X = self.preprocess(X, model=model, **kwargs)
+                pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize,
+                                                 as_reproduction_predictions_args=as_reproduction_predictions_args)
+        else:
+            model = self.load_child(self.models[0])
+            X = self.preprocess(X, model=model, **kwargs)
+            pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+            for model in self.models[1:]:
+                model = self.load_child(model)
+                pred_proba += model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+            pred_proba = pred_proba / len(self.models)
 
         return pred_proba
 
@@ -827,6 +946,7 @@ class BaggedEnsembleModel(AbstractModel):
         """
         init_args = self.get_params()
         init_args["hyperparameters"]["save_bag_folds"] = True  # refit full models must save folds
+        init_args["hyperparameters"].pop("num_folds", 0)  # refit full models should not have num_folds specified
         init_args["model_base"] = self.convert_to_refit_full_template_child()
         if name_suffix:
             init_args["name"] = init_args["name"] + name_suffix

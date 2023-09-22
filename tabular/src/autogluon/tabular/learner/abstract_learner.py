@@ -179,6 +179,7 @@ class AbstractTabularLearner(AbstractLearner):
         as_multiclass: bool = True,
         inverse_transform: bool = True,
         transform_features: bool = True,
+        as_reproduction_predictions_args: dict | None = None,
     ):
         X_index = copy.deepcopy(X.index) if as_pandas else None
         if X.empty:
@@ -186,7 +187,7 @@ class AbstractTabularLearner(AbstractLearner):
         else:
             if transform_features:
                 X = self.transform_features(X)
-            y_pred_proba = self.load_trainer().predict_proba(X, model=model)
+            y_pred_proba = self.load_trainer().predict_proba(X, model=model, as_reproduction_predictions_args=as_reproduction_predictions_args)
         y_pred_proba = self._post_process_predict_proba(
             y_pred_proba=y_pred_proba, as_pandas=as_pandas, index=X_index, as_multiclass=as_multiclass, inverse_transform=inverse_transform
         )
