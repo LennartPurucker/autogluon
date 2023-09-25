@@ -74,10 +74,61 @@ class LGBModel(AbstractModel):
 
     def _fit(self, X, y, X_val=None, y_val=None, time_limit=None, num_gpus=0, num_cpus=0, sample_weight=None,
              sample_weight_val=None, verbosity=2, **kwargs):
+
+
         try_import_lightgbm()  # raise helpful error message if LightGBM isn't installed
         start_time = time.time()
         ag_params = self._get_ag_params()
         params = self._get_model_params()
+        self._stacking_dropout = params.pop("stacking_dropout", False)
+        self._stacking_dropout_per = params.pop("stacking_dropout_per", 0.5)
+        self._threshold_norm = params.pop("threshold_norm", False)
+
+
+        if self._threshold_norm:
+            def _find_optimal_threshold(proba):
+                from sklearn.metrics import balanced_accuracy_score
+
+                threshold_pos = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                                 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+
+                def proba_to_binary(t):
+                    return np.where(proba >= t, 1, 0)
+
+                tf = threshold_pos[np.argmax([balanced_accuracy_score(y, proba_to_binary(ti)) for ti in threshold_pos])]
+                return tf
+
+            stack_f = self.feature_metadata.get_features(required_special_types=['stack'])
+
+            for f in stack_f:
+                opt_tf = _find_optimal_threshold(X[f])
+
+                print()
+
+
+        if self._stacking_dropout:
+            import math
+            import pandas as pd
+            rng = np.random.RandomState(int(self.name.replace("F", "").replace("S", "")))
+
+            _f_sel = self.feature_metadata.get_features(required_special_types=['stack'])
+            # no_stack_f = self.feature_metadata.get_features(invalid_special_types=['stack'])
+            # _f_sel = list(rng.choice(stack_f, math.floor(len(stack_f)*0.95), replace=False))
+            # _f_sel += list(rng.choice(no_stack_f, math.floor(len(no_stack_f)*0.5), replace=False))
+            # _f_sel = X.columns
+
+            X = X.copy()
+            more_X = X.copy()
+            for f in _f_sel:
+                i_sel = rng.choice(X.index, math.floor(len(X.index) * 0.67), replace=False)
+                X.loc[i_sel, f] = -1
+                i_sel = rng.choice(X.index, math.floor(len(X.index) * 0.67), replace=False)
+                more_X.loc[i_sel, f] = -2
+            X = pd.concat([X, more_X], axis=0).reset_index(drop=True)
+            y = pd.concat([y, y]).reset_index(drop=True)
+            shuffle_i = rng.choice(X.index, len(X.index), replace=False)
+            X = X.loc[shuffle_i].reset_index(drop=True)
+            y = y.loc[shuffle_i].reset_index(drop=True)
 
         if verbosity <= 1:
             log_period = False
@@ -443,8 +494,11 @@ class LGBModel(AbstractModel):
         X = super()._preprocess_nonadaptive(X=X, **kwargs)
 
         if is_train:
+            # Dropout stuff
+            self._requires_select = False\
+
             self._requires_remap = False
-            for column in X.columns:
+            for column in self._features_internal:
                 if isinstance(column, str):
                     new_column = re.sub(r'[",:{}[\]]', "", column)
                     if new_column != column:
@@ -456,6 +510,8 @@ class LGBModel(AbstractModel):
                     [self._features_internal_map[feature] for feature in list(X.columns)])
             else:
                 self._features_internal_list = self._features_internal
+
+
 
         #     if self._scale:
         #         from sklearn.preprocessing import StandardScaler
