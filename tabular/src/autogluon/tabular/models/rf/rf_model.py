@@ -282,7 +282,7 @@ class RFModel(AbstractModel):
 
                 pred += tmp_pred
 
-            pred /= denominator[:, None]
+            pred /= denominator[:, None] if classification_problem else denominator
             if classification_problem:
                 return self._convert_proba_to_unified_form(pred)
             return pred
