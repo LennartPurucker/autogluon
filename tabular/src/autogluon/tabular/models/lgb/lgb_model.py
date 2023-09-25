@@ -108,6 +108,7 @@ class LGBModel(AbstractModel):
 
         if self._stacking_dropout:
             import math
+
             import pandas as pd
             rng = np.random.RandomState(int(self.name.replace("F", "").replace("S", "")))
 
@@ -170,8 +171,10 @@ class LGBModel(AbstractModel):
         if self._label_flip_protection or self._test:
             stack_f = self.feature_metadata.get_features(required_special_types=['stack'])
 
-            from scripts.leakage_benchmark.src.other.post_hoc_ensembling import caruana_weighted, \
-                roc_auc_binary_loss_proba
+            from scripts.leakage_benchmark.src.other.post_hoc_ensembling import (
+                caruana_weighted,
+                roc_auc_binary_loss_proba,
+            )
             self._l1_ges_weights, _ = caruana_weighted([np.array(x) for x in X[stack_f].values.T.tolist()],
                                                        y, 42, 50, roc_auc_binary_loss_proba)
             self._stack_f = stack_f
