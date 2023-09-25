@@ -1533,6 +1533,7 @@ class TabularPredictor:
         transform_features: bool = True,
         *,
         decision_threshold: float | None = None,
+        as_reproduction_predictions_args: dict | None = None,
     ):
         """
         Use trained models to produce predictions of `label` column values for new data.
@@ -1569,7 +1570,8 @@ class TabularPredictor:
         data = self._get_dataset(data)
         if decision_threshold is None:
             decision_threshold = self.decision_threshold
-        return self._learner.predict(X=data, model=model, as_pandas=as_pandas, transform_features=transform_features, decision_threshold=decision_threshold)
+        return self._learner.predict(X=data, model=model, as_pandas=as_pandas, transform_features=transform_features, decision_threshold=decision_threshold,
+                                     as_reproduction_predictions_args=as_reproduction_predictions_args)
 
     def predict_proba(
         self,

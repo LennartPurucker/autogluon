@@ -202,12 +202,14 @@ class AbstractTabularLearner(AbstractLearner):
         transform_features: bool = True,
         *,
         decision_threshold: float | None = None,
+        as_reproduction_predictions_args: dict | None = None,
     ):
         if decision_threshold is None:
             decision_threshold = 0.5
         X_index = copy.deepcopy(X.index) if as_pandas else None
         y_pred_proba = self.predict_proba(
-            X=X, model=model, as_pandas=False, as_multiclass=False, inverse_transform=False, transform_features=transform_features
+            X=X, model=model, as_pandas=False, as_multiclass=False, inverse_transform=False, transform_features=transform_features,
+            as_reproduction_predictions_args=as_reproduction_predictions_args
         )
         problem_type = self.label_cleaner.problem_type_transform or self.problem_type
         y_pred = get_pred_from_proba(y_pred_proba=y_pred_proba, problem_type=problem_type, decision_threshold=decision_threshold)
