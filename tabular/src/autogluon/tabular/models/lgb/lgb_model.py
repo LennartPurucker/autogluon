@@ -83,7 +83,7 @@ class LGBModel(AbstractModel):
         self._stacking_dropout = params.pop("stacking_dropout", False)
         self._stacking_dropout_per = params.pop("stacking_dropout_per", 0.5)
         self._threshold_norm = params.pop("threshold_norm", False)
-
+        self._test_dropout= params.pop("test_dropout", False)
 
         if self._threshold_norm:
             def _find_optimal_threshold(proba):
@@ -99,12 +99,10 @@ class LGBModel(AbstractModel):
                 return tf
 
             stack_f = self.feature_metadata.get_features(required_special_types=['stack'])
-
+            self._opt_tf_map = dict()
             for f in stack_f:
                 opt_tf = _find_optimal_threshold(X[f])
-
-                print()
-
+                self._opt_tf_map[f] = opt_tf - 0.5
 
         if self._stacking_dropout:
             import math
@@ -118,18 +116,24 @@ class LGBModel(AbstractModel):
             # _f_sel += list(rng.choice(no_stack_f, math.floor(len(no_stack_f)*0.5), replace=False))
             # _f_sel = X.columns
 
+            proba_correct = (y == np.unique(y)[1]).astype(int)
             X = X.copy()
-            more_X = X.copy()
             for f in _f_sel:
-                i_sel = rng.choice(X.index, math.floor(len(X.index) * 0.67), replace=False)
-                X.loc[i_sel, f] = -1
-                i_sel = rng.choice(X.index, math.floor(len(X.index) * 0.67), replace=False)
-                more_X.loc[i_sel, f] = -2
-            X = pd.concat([X, more_X], axis=0).reset_index(drop=True)
-            y = pd.concat([y, y]).reset_index(drop=True)
-            shuffle_i = rng.choice(X.index, len(X.index), replace=False)
-            X = X.loc[shuffle_i].reset_index(drop=True)
-            y = y.loc[shuffle_i].reset_index(drop=True)
+                i_sel = rng.choice(X.index, math.floor(len(X.index) * self._stacking_dropout_per), replace=False)
+                tmp_proba_correct = proba_correct[i_sel].copy()
+
+                if self._test_dropout:
+                    # from scipy.stats import iqr
+                    # rel_f = X[f]
+                    # tmp_proba_correct[tmp_proba_correct == 0] = np.min(rel_f[rel_f > (np.percentile(rel_f, 25) - iqr(rel_f))])
+                    # tmp_proba_correct[tmp_proba_correct == 1] = np.max(rel_f[rel_f < (np.percentile(rel_f, 75) + iqr(rel_f))])
+
+                    tmp_proba_correct[tmp_proba_correct == 0] = np.percentile(X[f], 3)
+                    tmp_proba_correct[tmp_proba_correct == 1] = np.percentile(X[f], 97)
+                else:
+                    tmp_proba_correct[tmp_proba_correct == 0] = np.min(X[f])
+                    tmp_proba_correct[tmp_proba_correct == 1] = np.max(X[f])
+                X.loc[i_sel, f] = tmp_proba_correct
 
         if verbosity <= 1:
             log_period = False
@@ -514,6 +518,15 @@ class LGBModel(AbstractModel):
             else:
                 self._features_internal_list = self._features_internal
 
+        if self._threshold_norm:
+            X = X.copy()
+            for f, c in self._opt_tf_map.items():
+                oof = X[f] + c
+                above_t = oof >= 0.5
+
+                oof[above_t] = 0.5+(oof[above_t]-0.5)/(0.5+c)*0.5
+                oof[~above_t] = 0.5+(oof[~above_t]-0.5)/(0.5-c)*0.5
+                X[f] = oof
 
 
         #     if self._scale:
