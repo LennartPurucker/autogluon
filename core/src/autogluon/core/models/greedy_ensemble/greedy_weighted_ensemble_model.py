@@ -5,7 +5,7 @@ from autogluon.common.features.types import S_STACK
 from ...constants import MULTICLASS, QUANTILE, SOFTCLASS
 from ..abstract.abstract_model import AbstractModel
 from .ensemble_selection import EnsembleSelection, SimpleWeightedEnsemble
-from .population_based_ensemble_selection.qo_ensemble_selection import QOEnsembleSelection
+from .population_based_ensemble_selection.qdo_es.qdo_es import QDOEnsembleSelection
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +143,8 @@ class SimpleWeightedEnsembleModel(GreedyWeightedEnsembleModel):
         self.weights_ = self.model.weights_
 
 
-class QOWeightedEnsembleModel(GreedyWeightedEnsembleModel):
-    def __init__(self, base_model_names=None, model_base=QOEnsembleSelection, **kwargs):
+class QDOWeightedEnsembleModel(GreedyWeightedEnsembleModel):
+    def __init__(self, base_model_names=None, model_base=QDOEnsembleSelection, **kwargs):
         super().__init__(**kwargs)
         self.model_base = model_base
         self.num_pred_cols_per_model = None

@@ -1649,13 +1649,29 @@ class AbstractTrainer:
             else:
                 save_bag_folds = True
 
+        # Import behavior space for QDO-ES
+        from ..models.greedy_ensemble.population_based_ensemble_selection.qdo_es.behavior_spaces import bs_loss_correlation
+
         base_model_paths_dict = self.get_models_attribute_dict(attribute="path", models=base_model_names)
         base_model_paths_dict = {key: os.path.join(self.path, val) for key, val in base_model_paths_dict.items()}
         weighted_ensemble_models, _ = get_models_func(
             hyperparameters={
                 "default": {
                     "ENS_WEIGHTED": [child_hyperparameters],
-                    "QO_ENS_WEIGHTED": [child_hyperparameters],
+                    "QDO_ENS_WEIGHTED": [
+                        # QO-ES Config
+                        {
+                            "archive_type": "quality",
+                            "behavior_space": None,
+                            "emitter_vars": dict(crossover="average"),
+                        },
+                        # QDO-ES Config
+                        {  # FIXME: determine how to rename this config, currently, this is QDO_2
+                            "archive_type": "sliding",
+                            "behavior_space": bs_loss_correlation(classification_problem=self.problem_type in [MULTICLASS, BINARY]),
+                            "emitter_vars": dict(crossover="two_point_crossover"),
+                        },
+                    ],
                 }
             },
             ensemble_type=WeightedEnsembleModel,

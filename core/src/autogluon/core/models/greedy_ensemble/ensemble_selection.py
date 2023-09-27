@@ -25,12 +25,18 @@ class AbstractWeightedEnsemble:
         preds_ensemble = np.sum(preds_norm, axis=0)
         return preds_ensemble
 
-    def _calculate_regret(self, y_true, y_pred_proba, metric, sample_weight=None):
+    def _calculate_regret(self, y_true, y_pred_proba, metric, sample_weight=None, return_score=False):
         if metric.needs_pred or metric.needs_quantile:
             preds = get_pred_from_proba(y_pred_proba=y_pred_proba, problem_type=self.problem_type)
         else:
             preds = y_pred_proba
+        if (self.problem_type == "binary") and (preds.ndim == 2):
+            preds = preds[:, 1]
         score = compute_weighted_metric(y_true, preds, metric, sample_weight, quantile_levels=self.quantile_levels)
+
+        if return_score:
+            return score
+
         return metric._optimum - score
 
 

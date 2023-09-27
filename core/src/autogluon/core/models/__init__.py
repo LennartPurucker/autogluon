@@ -5,6 +5,6 @@ from .ensemble.stacker_ensemble_model import StackerEnsembleModel
 from .ensemble.weighted_ensemble_model import WeightedEnsembleModel
 from .greedy_ensemble.greedy_weighted_ensemble_model import (
     GreedyWeightedEnsembleModel,
-    QOWeightedEnsembleModel,
+    QDOWeightedEnsembleModel,
     SimpleWeightedEnsembleModel,
 )
