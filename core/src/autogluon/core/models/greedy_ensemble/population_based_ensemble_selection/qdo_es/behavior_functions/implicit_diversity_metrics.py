@@ -3,10 +3,11 @@
 Any metric that tries to implicit measure the diversity of an ensemble.
 """
 
-from ..behavior_space import BehaviorFunction
 from itertools import combinations
 from statistics import mean
-from typing import Tuple, Dict, Union, List
+from typing import Dict, List, Tuple, Union
+
+from ..behavior_space import BehaviorFunction
 
 
 def config_space_gower_similarity(input_metadata: Tuple[Dict[str, Union[int, float]], List[dict]]):

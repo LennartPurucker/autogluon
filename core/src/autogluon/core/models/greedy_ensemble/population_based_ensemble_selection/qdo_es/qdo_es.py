@@ -1,25 +1,20 @@
+import logging
 import os
+import time
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+from math import isclose
+from typing import Callable, Dict, List, Optional, Union
 
 import numpy as np
-import time
-import logging
-from math import isclose
-
-from typing import List, Optional, Union, Callable, Dict
-
-from sklearn.utils import check_random_state
-from ...ensemble_selection import AbstractWeightedEnsemble
-
-from .behavior_space import BehaviorSpace
-
 from ribs.optimizers import Optimizer
-from .emitters import DiscreteWeightSpaceEmitter
-from .custom_archives.quality_archive import QualityArchive
+from sklearn.utils import check_random_state
+
+from ...ensemble_selection import AbstractWeightedEnsemble
+from .behavior_space import BehaviorSpace
 from .custom_archives.custom_sliding_boundaries_archive import SlidingBoundariesArchive
-
-from functools import partial
-
-from concurrent.futures import ProcessPoolExecutor
+from .custom_archives.quality_archive import QualityArchive
+from .emitters import DiscreteWeightSpaceEmitter
 
 logger = logging.getLogger(__name__)
 

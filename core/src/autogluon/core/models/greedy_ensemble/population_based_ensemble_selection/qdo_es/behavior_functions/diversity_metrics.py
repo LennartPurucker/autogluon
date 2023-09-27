@@ -1,9 +1,9 @@
 from abc import ABCMeta, abstractmethod
 from typing import Callable, List
-import numpy as np
 
-from sklearn.utils.validation import _check_y, check_array
+import numpy as np
 from sklearn.preprocessing import LabelBinarizer
+from sklearn.utils.validation import _check_y, check_array
 
 
 # --- Class Stuff

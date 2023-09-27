@@ -16,7 +16,8 @@ Example:
     ])
 
 """
-from typing import Callable, List, Tuple, Optional, Any
+from typing import Any, Callable, List, Optional, Tuple
+
 import numpy as np
 
 ALLOWED_ARGUMENTS = ["y_true", "y_pred_ensemble", "Y_pred_base_models", "weights", "input_metadata", "y_pred"]

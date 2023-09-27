@@ -5,9 +5,9 @@ def bs_configspace_similarity_and_loss_correlation():
     # "bs_configspace_similarity_and_loss_correlation"
     # - Used in original paper but not used here as ConfigSpaceGowerSimilarity would require config space
     #   to be defined. But AutoGluon has not real overlapping config space.
-    from .behavior_space import BehaviorSpace
     from .behavior_functions.basic import LossCorrelationMeasure
     from .behavior_functions.implicit_diversity_metrics import ConfigSpaceGowerSimilarity
+    from .behavior_space import BehaviorSpace
 
     bs = BehaviorSpace([ConfigSpaceGowerSimilarity, LossCorrelationMeasure])
 
@@ -16,8 +16,8 @@ def bs_configspace_similarity_and_loss_correlation():
 
 def bs_loss_correlation(classification_problem):
     # 1D behavior space that can be used for now
-    from .behavior_space import BehaviorSpace
     from .behavior_functions.basic import LossCorrelationMeasureClassification, LossCorrelationMeasureRegression
+    from .behavior_space import BehaviorSpace
 
     if classification_problem:
         msr = LossCorrelationMeasureClassification

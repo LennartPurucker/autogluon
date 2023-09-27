@@ -4,9 +4,9 @@ from collections import deque
 
 import numba as nb
 import numpy as np
+from ribs.archives._archive_base import ArchiveBase, require_init
 from sortedcontainers import SortedList
 
-from ribs.archives._archive_base import ArchiveBase, require_init
 from ..custom_archives.utils import remap_clean_up
 
 _EPSILON = 1e-6
