@@ -53,10 +53,12 @@ class AbstractTabularLearner(AbstractLearner):
         sample_weight=None,
         weight_evaluation=False,
         groups=None,
+        clean_oof_predictions=False,
     ):
         super().__init__(path_context=path_context, random_state=random_state)
         self.label = label
         self.ignored_columns = ignored_columns
+        self.clean_oof_predictions = clean_oof_predictions
         if self.ignored_columns is None:
             self.ignored_columns = []
         self.threshold = label_count_threshold

@@ -22,6 +22,7 @@ from ...utils.exceptions import TimeLimitExceeded
 from ...utils.loaders import load_pkl
 from ...utils.savers import save_pkl
 from ...utils.utils import CVSplitter, _compute_fi_with_stddev
+from ...calibrate.stacked_overfitting_mitigation import clean_oof_predictions
 from ..abstract.abstract_model import AbstractModel
 from ..abstract.model_trial import model_trial, skip_hpo
 from .fold_fitting_strategy import (
@@ -494,6 +495,12 @@ class BaggedEnsembleModel(AbstractModel):
             raise ValueError(f"n_repeats must equal 0 when fitting a single model with k_fold == 1, value: {self._n_repeats}")
         model_base.name = f"{model_base.name}S1F1"
         model_base.set_contexts(path_context=os.path.join(self.path, model_base.name))
+
+        if kwargs["clean_oof_predictions"]:
+            # FIXME: technically, we would need to do this per bag of RF/XT but this would require changing bagging code of sklearn
+            #   and not doing it is still good enough. Could misrepresent RF/XT's val score.
+            X, y = clean_oof_predictions(X, y, kwargs['feature_metadata'], model_base.problem_type)
+
         time_start_fit = time.time()
         model_base.fit(X=X, y=y, time_limit=time_limit, **kwargs)
         model_base.fit_time = time.time() - time_start_fit

@@ -20,6 +20,7 @@ from autogluon.common.utils.try_import import try_import_ray
 from ...ray.resources_calculator import ResourceCalculatorFactory
 from ...utils.exceptions import NotEnoughCudaMemoryError, NotEnoughMemoryError, TimeLimitExceeded
 from ..abstract.abstract_model import AbstractModel
+from ...calibrate.stacked_overfitting_mitigation import clean_oof_predictions
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +321,10 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
         train_index, val_index = fold
         X_fold, X_val_fold = self.X.iloc[train_index, :], self.X.iloc[val_index, :]
         y_fold, y_val_fold = self.y.iloc[train_index], self.y.iloc[val_index]
+
+        if kwargs["clean_oof_predictions"]:
+            X_fold, y_fold = clean_oof_predictions(X_fold, y_fold, kwargs['feature_metadata'], model_base.problem_type)
+
         fold_model = copy.deepcopy(model_base)
         fold_model.name = f"{fold_model.name}{model_name_suffix}"
         fold_model.set_contexts(os.path.join(self.bagged_ensemble_model.path, fold_model.name))
@@ -395,6 +400,10 @@ def _ray_fit(
 
     X_fold, X_val_fold = X.iloc[train_index, :], X.iloc[val_index, :]
     y_fold, y_val_fold = y.iloc[train_index], y.iloc[val_index]
+
+    if kwargs_fold["clean_oof_predictions"]:
+        X_fold, y_fold = clean_oof_predictions(X_fold, y_fold, kwargs_fold['feature_metadata'], model_base.problem_type)
+
     if is_pseudo:
         logger.log(15, f"{len(X_pseudo)} extra rows of pseudolabeled data added to training set for {fold_model.name}")
         X_fold = pd.concat([X_fold, X_pseudo], axis=0, ignore_index=True)

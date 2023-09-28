@@ -147,6 +147,7 @@ class DefaultLearner(AbstractTabularLearner):
             save_data=self.cache_data,
             random_state=self.random_state,
             verbosity=verbosity,
+            clean_oof_predictions=self.clean_oof_predictions,
         )
 
         self.trainer_path = trainer.path

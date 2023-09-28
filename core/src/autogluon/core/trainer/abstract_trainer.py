@@ -99,6 +99,7 @@ class AbstractTrainer:
         save_data=False,
         random_state=0,
         verbosity=2,
+        clean_oof_predictions=False,
     ):
         self.path = path
         self.problem_type = problem_type
@@ -108,6 +109,7 @@ class AbstractTrainer:
             random_state  # Integer value added to the stack level to get the random_state for kfold splits or the train/val split if bagging is disabled
         )
         self.verbosity = verbosity
+        self.clean_oof_predictions = clean_oof_predictions
         self.sample_weight = sample_weight  # TODO: consider redesign where Trainer doesn't need sample_weight column name and weights are separate from X
         self.weight_evaluation = weight_evaluation
         if eval_metric is not None:
@@ -1697,7 +1699,7 @@ class AbstractTrainer:
             level=level,
             time_limit=time_limit,
             ens_sample_weight=w,
-            fit_kwargs=dict(num_classes=self.num_classes, groups=None),  # FIXME: Is this the right way to do this?
+            fit_kwargs=dict(num_classes=self.num_classes, groups=None, so_free_model=True),  # FIXME: Is this the right way to do this?
         )
         for weighted_ensemble_model_name in models:
             if check_if_best and weighted_ensemble_model_name in self.get_model_names():
@@ -3331,8 +3333,8 @@ class AbstractTrainer:
         # Returns kwargs to be passed to AbstractModel's fit function
         if fit_kwargs is None:
             fit_kwargs = dict()
-
-        model_fit_kwargs = dict(time_limit=time_limit, verbosity=self.verbosity, **fit_kwargs)
+        clean_oof_predictions = self.clean_oof_predictions and not fit_kwargs.get("so_free_model", False)
+        model_fit_kwargs = dict(time_limit=time_limit, verbosity=self.verbosity, clean_oof_predictions=clean_oof_predictions, **fit_kwargs)
         if self.sample_weight is not None:
             X, w_train = extract_column(X, self.sample_weight)
             if w_train is not None:  # may be None for ensemble
