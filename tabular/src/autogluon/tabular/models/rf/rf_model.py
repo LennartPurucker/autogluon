@@ -32,7 +32,10 @@ class RFModel(AbstractModel):
         self._daal = False  # Whether daal4py backend is being used
         self._num_features_post_process = None
 
-    def _get_model_type(self):
+    def _get_model_type(self, clean_oof_predictions=False):
+        if self.problem_type in [REGRESSION, QUANTILE, MULTICLASS]:
+            raise ValueError(f"{self.problem_type} not supported yet for clean_oof_predictions!")
+
         if self.problem_type == QUANTILE:
             from .rf_quantile import RandomForestQuantileRegressor
 
@@ -40,6 +43,8 @@ class RFModel(AbstractModel):
         if self.params_aux.get("use_daal", False):
             # Disabled by default because OOB score does not yet work properly
             try:
+                if clean_oof_predictions:
+                    raise ValueError("sklearnex RF backend not supported for clean_oof_predictions. Falling back to default.")
                 # FIXME: sklearnex OOB score is broken, returns biased predictions. Without this optimization, can't compute Efficient OOF.
                 #  Refer to https://github.com/intel/scikit-learn-intelex/issues/933
                 #  Current workaround: Forcibly set oob_score=True during fit to compute OOB during train time.
@@ -53,11 +58,17 @@ class RFModel(AbstractModel):
                 logger.log(15, "\tUsing sklearnex RF backend...")
                 self._daal = True
             except:
-                from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+                if clean_oof_predictions:
+                    from .custom_forest import RandomForestClassifier
+                else:
+                    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
                 self._daal = False
         else:
-            from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+            if clean_oof_predictions:
+                from .custom_forest import RandomForestClassifier
+            else:
+                from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
             self._daal = False
         if self.problem_type in [REGRESSION, SOFTCLASS]:
@@ -147,7 +158,9 @@ class RFModel(AbstractModel):
     def _fit(self, X, y, num_cpus=-1, time_limit=None, sample_weight=None, **kwargs):
         time_start = time.time()
 
-        model_cls = self._get_model_type()
+        stack_cols = self.feature_metadata.get_features(required_special_types=["stack"])
+        clean_oof_predictions_needed = stack_cols and kwargs["clean_oof_predictions"]
+        model_cls = self._get_model_type(clean_oof_predictions_needed)
 
         max_memory_usage_ratio = self.params_aux["max_memory_usage_ratio"]
         params = self._get_model_params()
@@ -183,6 +196,10 @@ class RFModel(AbstractModel):
             params["oob_score"] = True
 
         model = model_cls(**params)
+        if clean_oof_predictions_needed:
+            extra_fit_para = dict(stack_cols_indicator=[1 if _f in stack_cols else 0 for _f in self._features_internal])
+        else:
+            extra_fit_para = dict()
 
         time_train_start = time.time()
         for i, n_estimators in enumerate(n_estimator_increments):
@@ -192,7 +209,7 @@ class RFModel(AbstractModel):
                 else:
                     params["n_estimators"] = n_estimators
                     model = model_cls(**params)
-            model = model.fit(X, y, sample_weight=sample_weight)
+            model = model.fit(X, y, sample_weight=sample_weight, **extra_fit_para)
             if (i == 0) and (len(n_estimator_increments) > 1):
                 time_elapsed = max(time.time() - time_train_start, 0.001)  # avoid it being too small and being truncated to 0
                 model_size_bytes = 0

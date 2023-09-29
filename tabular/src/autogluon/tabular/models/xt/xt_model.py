@@ -1,4 +1,4 @@
-from autogluon.core.constants import QUANTILE, REGRESSION
+from autogluon.core.constants import QUANTILE, REGRESSION, MULTICLASS
 
 from ..rf.rf_model import RFModel
 
@@ -8,7 +8,10 @@ class XTModel(RFModel):
     Extra Trees model (scikit-learn): https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html#sklearn.ensemble.ExtraTreesClassifier
     """
 
-    def _get_model_type(self):
+    def _get_model_type(self, clean_oof_predictions=False):
+        if self.problem_type in [REGRESSION, QUANTILE, MULTICLASS]:
+            raise ValueError(f"{self.problem_type} not supported yet for clean_oof_predictions!")
+
         if self.problem_type == REGRESSION:
             from sklearn.ensemble import ExtraTreesRegressor
 
@@ -18,6 +21,6 @@ class XTModel(RFModel):
 
             return ExtraTreesQuantileRegressor
         else:
-            from sklearn.ensemble import ExtraTreesClassifier
+            from ..rf.custom_forest import ExtraTreesClassifier
 
             return ExtraTreesClassifier
