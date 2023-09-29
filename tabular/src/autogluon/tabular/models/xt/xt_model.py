@@ -1,4 +1,4 @@
-from autogluon.core.constants import QUANTILE, REGRESSION, MULTICLASS
+from autogluon.core.constants import MULTICLASS, QUANTILE, REGRESSION
 
 from ..rf.rf_model import RFModel
 
