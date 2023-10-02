@@ -1,15 +1,15 @@
 import pandas as pd
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Optional
 from sklearn.isotonic import IsotonicRegression
 
 from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
 from autogluon.common.features.feature_metadata import FeatureMetadata
 
 
-def clean_oof_predictions(X: pd.DataFrame, y: pd.Series, feature_metadata: FeatureMetadata, problem_type: str) -> Tuple[pd.DataFrame, pd.Series]:
-    # FIXME: ignores sample weights so far, would need to add them here too.
-
+def clean_oof_predictions(
+    X: pd.DataFrame, y: pd.Series, feature_metadata: FeatureMetadata, problem_type: str, sample_weight: Optional[np.ndarray] = None
+) -> Tuple[pd.DataFrame, pd.Series]:
     stack_cols = feature_metadata.get_features(required_special_types=["stack"])
     if not stack_cols:
         return X, y
@@ -19,7 +19,7 @@ def clean_oof_predictions(X: pd.DataFrame, y: pd.Series, feature_metadata: Featu
         # TODO: verify assumption that proba are always positive class proba (think this is true)
         for f in stack_cols:
             reg = IsotonicRegression(y_max=1, y_min=0, out_of_bounds="clip", increasing=True)
-            X[f] = reg.fit_transform(X[f], y)
+            X[f] = reg.fit_transform(X[f], y, sample_weight=sample_weight)
 
     elif problem_type == MULTICLASS:
         raise NotImplementedError(
