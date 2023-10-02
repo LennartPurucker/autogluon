@@ -1,10 +1,11 @@
-import pandas as pd
+from typing import Optional, Tuple
+
 import numpy as np
-from typing import Tuple, Optional
+import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 
-from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
 from autogluon.common.features.feature_metadata import FeatureMetadata
+from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
 
 
 def clean_oof_predictions(
