@@ -18,9 +18,19 @@ def clean_oof_predictions(
 
     if problem_type == BINARY:
         # TODO: verify assumption that proba are always positive class proba (think this is true)
+
+        if sample_weight is None:
+            curr_sample_weight = np.ones((len(X),), dtype=np.float64)
+        else:
+            curr_sample_weight = sample_weight.copy()
+
+        _y = np.concatenate([y.values, np.array([0, 1])])
+        _curr_sample_weight = np.concatenate([curr_sample_weight, np.array([1, 1])])
+
         for f in stack_cols:
-            reg = IsotonicRegression(y_max=1, y_min=0, out_of_bounds="clip", increasing=True)
-            X[f] = reg.fit_transform(X[f], y, sample_weight=sample_weight)
+            reg = IsotonicRegression(y_min=None, y_max=None, out_of_bounds="clip", increasing=True)
+            vals = np.concatenate([X[f].values, np.array([0, 1])])
+            X[f] = reg.fit_transform(vals, _y, sample_weight=_curr_sample_weight)[:-2]
 
     elif problem_type == MULTICLASS:
         raise NotImplementedError(

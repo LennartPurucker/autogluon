@@ -193,9 +193,13 @@ def _parallel_build_trees(
 
     if stack_cols_indicator is not None:
         X = X.copy()
+        _y = np.concatenate([y[:, 0], np.array([0, 1])])
+        _curr_sample_weight = np.concatenate([curr_sample_weight, np.array([1, 1])])  # FIXME: technically not the correct sample weights if balanced above
+
         for f in np.where(stack_cols_indicator)[0]:
-            reg = IsotonicRegression(y_max=1, y_min=0, out_of_bounds="clip", increasing=True)
-            X[:, f] = reg.fit_transform(X[:, f], y[:, 0], sample_weight=curr_sample_weight)
+            reg = IsotonicRegression(y_max=None, y_min=None, out_of_bounds="clip", increasing=True)
+            vals = np.concatenate([X[:, f], np.array([0, 1])])
+            X[:, f] = reg.fit_transform(vals, _y, sample_weight=_curr_sample_weight)[:-2]
 
     tree.fit(X, y, sample_weight=curr_sample_weight, check_input=False)
 
