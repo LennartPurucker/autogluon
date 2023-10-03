@@ -195,7 +195,11 @@ def _parallel_build_trees(
         X = X.copy()
         for f in np.where(stack_cols_indicator)[0]:
             reg = IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
-            X[:, f] = reg.fit_transform(X[:, f], y[:, 0], sample_weight=curr_sample_weight)
+            # -- v2
+            # X[:, f] = reg.fit_transform(X[:, f], y[:, 0], sample_weight=curr_sample_weight)
+
+            # -- v4
+            X[:, f] = reg.fit_transform(X[:, f], y[:, 0])  # not using sample weights on purpose for v4
 
     tree.fit(X, y, sample_weight=curr_sample_weight, check_input=False)
 

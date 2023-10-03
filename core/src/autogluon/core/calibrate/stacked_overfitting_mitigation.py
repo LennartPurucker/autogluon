@@ -1,10 +1,9 @@
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 
-from autogluon.common.features.feature_metadata import FeatureMetadata
 from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
 
 
@@ -40,11 +39,12 @@ def clean_oof_predictions(
 def re_clean_oof_predictions(X, ir_map, stack_cols, problem_type):
     X = X.copy()
 
-    if problem_type == BINARY:
-        for f in stack_cols:
-            X[f] = ir_map[f].transform(X[f])
-    else:
-        raise NotImplementedError
+    if problem_type != BINARY:
+        raise ValueError(f"Unsupported Problem Type for cleaning oof predictions! Got: {problem_type}")
+
+    for f in stack_cols:
+        X[f] = ir_map[f].transform(X[f])
+
     return X
 
 
@@ -118,3 +118,10 @@ def re_clean_oof_predictions(X, ir_map, stack_cols, problem_type):
 #         ir_map[f] = reg
 #
 #     return X, ir_map
+# --- Test for before preprocess
+# # if not kwargs.get('fit', False):
+#         #     stack_cols = self.feature_metadata.get_features(required_special_types=["stack"])
+#         #     if stack_cols and hasattr(self, "_re_ir") and self._re_ir:
+#         #         from autogluon.core.calibrate.stacked_overfitting_mitigation import re_clean_oof_predictions
+#         #         X = re_clean_oof_predictions(X, self._ir_map, stack_cols, self.problem_type)
+#

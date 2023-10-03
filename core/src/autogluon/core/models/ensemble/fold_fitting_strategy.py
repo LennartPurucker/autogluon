@@ -338,7 +338,7 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
                 kwargs_fold["sample_weight"] = self.sample_weight[train_index]
                 kwargs_fold["sample_weight_val"] = self.sample_weight[val_index]
 
-        X_fold = check_and_clean_oof(X_fold, y_fold, fold_model, kwargs_fold)
+        X_fold, X_val_fold = check_and_clean_oof(X_fold, y_fold, X_val_fold, y_val_fold, fold_model, kwargs_fold)
 
         if is_pseudo:
             logger.log(15, f"{len(self.X_pseudo)} extra rows of pseudolabeled data added to training set for {fold_model.name}")
@@ -355,21 +355,42 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
         return fold_model
 
 
-def check_and_clean_oof(X_fold, y_fold, fold_model, kwargs_fold):
+def check_and_clean_oof(X_fold, y_fold, X_val_fold, y_val_fold, fold_model, kwargs_fold):
     stack_cols = kwargs_fold["feature_metadata"].get_features(required_special_types=["stack"])
     if kwargs_fold["clean_oof_predictions"] and stack_cols:
-        X_fold, ir_map = clean_oof_predictions(
-            X_fold,
-            y_fold,
+        # -- v2
+        # X_fold, ir_map = clean_oof_predictions(
+        #     X_fold,
+        #     y_fold,
+        #     stack_cols,
+        #     fold_model.problem_type,
+        #     kwargs_fold.get("sample_weight", None),
+        # )
+
+        # -- v4
+        X = pd.concat([X_fold, X_val_fold])
+        y = pd.concat([y_fold, y_val_fold])
+        X, _ = clean_oof_predictions(
+            X,
+            y,
             stack_cols,
             fold_model.problem_type,
             kwargs_fold.get("sample_weight", None),
         )
-     
-        if hasattr(fold_model, 'requires_ir_map') and fold_model.requires_ir_map:
-            fold_model._ir_map = ir_map
+        X_fold = X.iloc[:len(X_fold), :]
+        # from autogluon.core.calibrate.stacked_overfitting_mitigation import re_clean_oof_predictions
+        # X_val_fold = re_clean_oof_predictions(X_val_fold, ir_map, stack_cols, fold_model.problem_type)
+        #fold_model._ir_map = ir_map
+        #fold_model._re_ir = False
+        # X_val_fold, _ = clean_oof_predictions(
+        #     X_val_fold,
+        #     y_val_fold,
+        #     stack_cols,
+        #     fold_model.problem_type,
+        #     kwargs_fold.get("sample_weight", None),
+        # )
 
-    return X_fold
+    return X_fold, X_val_fold
 
 def _ray_fit(
     *,
@@ -416,7 +437,7 @@ def _ray_fit(
     X_fold, X_val_fold = X.iloc[train_index, :], X.iloc[val_index, :]
     y_fold, y_val_fold = y.iloc[train_index], y.iloc[val_index]
 
-    X_fold = check_and_clean_oof(X_fold, y_fold, fold_model, kwargs_fold)
+    X_fold, X_val_fold = check_and_clean_oof(X_fold, y_fold, X_val_fold, y_val_fold, fold_model, kwargs_fold)
 
     if is_pseudo:
         logger.log(15, f"{len(X_pseudo)} extra rows of pseudolabeled data added to training set for {fold_model.name}")
