@@ -338,9 +338,8 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
                 kwargs_fold["sample_weight"] = self.sample_weight[train_index]
                 kwargs_fold["sample_weight_val"] = self.sample_weight[val_index]
 
-        if kwargs["clean_oof_predictions"]:
-            X_fold, y_fold = clean_oof_predictions(X_fold, y_fold, kwargs['feature_metadata'], model_base.problem_type,
-                                                   kwargs_fold.get("sample_weight", None))
+        X_fold = check_and_clean_oof(X_fold, y_fold, fold_model, kwargs_fold)
+
         if is_pseudo:
             logger.log(15, f"{len(self.X_pseudo)} extra rows of pseudolabeled data added to training set for {fold_model.name}")
             X_fold = pd.concat([X_fold, self.X_pseudo], axis=0, ignore_index=True)
@@ -355,6 +354,22 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
         fold_model.fit_time = time.time() - time_start_fold
         return fold_model
 
+
+def check_and_clean_oof(X_fold, y_fold, fold_model, kwargs_fold):
+    stack_cols = kwargs_fold["feature_metadata"].get_features(required_special_types=["stack"])
+    if kwargs_fold["clean_oof_predictions"] and stack_cols:
+        X_fold, ir_map = clean_oof_predictions(
+            X_fold,
+            y_fold,
+            stack_cols,
+            fold_model.problem_type,
+            kwargs_fold.get("sample_weight", None),
+        )
+     
+        if hasattr(fold_model, 'requires_ir_map') and fold_model.requires_ir_map:
+            fold_model._ir_map = ir_map
+
+    return X_fold
 
 def _ray_fit(
     *,
@@ -401,8 +416,7 @@ def _ray_fit(
     X_fold, X_val_fold = X.iloc[train_index, :], X.iloc[val_index, :]
     y_fold, y_val_fold = y.iloc[train_index], y.iloc[val_index]
 
-    if kwargs_fold["clean_oof_predictions"]:
-        X_fold, y_fold = clean_oof_predictions(X_fold, y_fold, kwargs_fold['feature_metadata'], model_base.problem_type, kwargs_fold.get("sample_weight", None))
+    X_fold = check_and_clean_oof(X_fold, y_fold, fold_model, kwargs_fold)
 
     if is_pseudo:
         logger.log(15, f"{len(X_pseudo)} extra rows of pseudolabeled data added to training set for {fold_model.name}")
