@@ -355,29 +355,63 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
         return fold_model
 
 
+# def plot_calibration(X_train, y_train, stack_cols, postfix, ir_map=None, X_train_org=None):
+#     import matplotlib.pyplot as plt
+#     # from sklearn.calibration import CalibrationDisplay
+#     # fig, ax = plt.subplots(figsize=(10, 10))
+#     # colors = plt.get_cmap("tab20")
+#     # colors.colors = colors.colors + plt.get_cmap("tab20b").colors
+#     # colors.colors = colors.colors + plt.get_cmap("tab20c").colors
+#     # colors.colors = colors.colors + plt.get_cmap("Paired").colors
+#     # colors.N = len(colors.colors)
+#     #
+#     # for i, f in enumerate(stack_cols):
+#     #     display = CalibrationDisplay.from_predictions(y_train, X_train[f], n_bins=20, name=f, ax=ax, color=colors(i))
+#     # plt.title(postfix)
+#     # plt.show()
+#
+#     if ir_map is not None:
+#         from matplotlib.collections import LineCollection
+#         import numpy as np
+#         n = len(y_train)
+#         fig, ax = plt.subplots(ncols=len(stack_cols), figsize=(20, 6))
+#
+#         for f_idx, f in enumerate(stack_cols):
+#             ax[f_idx].plot(X_train_org[f], y_train, "C0.", markersize=12)
+#             # ax[f_idx].plot(X_train_org[f], X_train[f], "C2.",  markersize=12)
+#             ax[f_idx].plot(ir_map[f].X_thresholds_, ir_map[f].y_thresholds_, "C1.-", markersize=12, alpha=0.5)
+#             ax[f_idx].set_title(f)
+#             ax[f_idx].set_xlim(-0.1, 1.1)
+#
+#         fig.supxlabel('Proba L1')
+#         fig.supylabel('Label / Adjusted Proba')
+#         plt.show()
+
 def check_and_clean_oof(X_fold, y_fold, X_val_fold, y_val_fold, fold_model, kwargs_fold):
     stack_cols = kwargs_fold["feature_metadata"].get_features(required_special_types=["stack"])
     if kwargs_fold["clean_oof_predictions"] and stack_cols:
-        # -- v2
-        # X_fold, ir_map = clean_oof_predictions(
-        #     X_fold,
-        #     y_fold,
-        #     stack_cols,
-        #     fold_model.problem_type,
-        #     kwargs_fold.get("sample_weight", None),
-        # )
+        # X_fold_org = X_fold.copy()
 
-        # -- v4
-        X = pd.concat([X_fold, X_val_fold])
-        y = pd.concat([y_fold, y_val_fold])
-        X, _ = clean_oof_predictions(
-            X,
-            y,
+        # -- default
+        X_fold, _ = clean_oof_predictions(
+            X_fold,
+            y_fold,
             stack_cols,
             fold_model.problem_type,
             kwargs_fold.get("sample_weight", None),
         )
-        X_fold = X.iloc[:len(X_fold), :]
+        # plot_calibration(X_fold, y_fold, stack_cols, 'After', ir_map, X_fold_org)
+        # -- v4
+        # X = pd.concat([X_fold, X_val_fold])
+        # y = pd.concat([y_fold, y_val_fold])
+        # X, _ = clean_oof_predictions(
+        #     X,
+        #     y,
+        #     stack_cols,
+        #     fold_model.problem_type,
+        #     kwargs_fold.get("sample_weight", None),
+        # )
+        # X_fold = X.iloc[:len(X_fold), :]
         # from autogluon.core.calibrate.stacked_overfitting_mitigation import re_clean_oof_predictions
         # X_val_fold = re_clean_oof_predictions(X_val_fold, ir_map, stack_cols, fold_model.problem_type)
         #fold_model._ir_map = ir_map

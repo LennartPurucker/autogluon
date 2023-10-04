@@ -2,7 +2,9 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.isotonic import IsotonicRegression
+
+# from sklearn.isotonic import IsotonicRegression
+from cir_model import CenteredIsotonicRegression
 
 from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
 
@@ -27,9 +29,9 @@ def clean_oof_predictions(
         curr_sample_weight = np.ones((len(X),), dtype=np.float64)
     else:
         curr_sample_weight = sample_weight.copy()
-
     for f in stack_cols:
-        reg = IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
+        reg = CenteredIsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
+        # reg = IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
         X[f] = reg.fit_transform(X[f], y, sample_weight=curr_sample_weight)
         ir_map[f] = reg
 

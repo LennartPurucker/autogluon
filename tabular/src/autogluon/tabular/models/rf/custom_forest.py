@@ -62,7 +62,8 @@ from sklearn.base import (
 from sklearn.exceptions import DataConversionWarning
 from sklearn.metrics import accuracy_score, r2_score
 from sklearn.preprocessing import OneHotEncoder
-from sklearn.isotonic import IsotonicRegression
+# from sklearn.isotonic import IsotonicRegression
+from cir_model import CenteredIsotonicRegression
 from sklearn.tree import (
     BaseDecisionTree,
     DecisionTreeClassifier,
@@ -194,12 +195,10 @@ def _parallel_build_trees(
     if stack_cols_indicator is not None:
         X = X.copy()
         for f in np.where(stack_cols_indicator)[0]:
-            reg = IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
-            # -- v2
-            # X[:, f] = reg.fit_transform(X[:, f], y[:, 0], sample_weight=curr_sample_weight)
-
-            # -- v4
-            X[:, f] = reg.fit_transform(X[:, f], y[:, 0])  # not using sample weights on purpose for v4
+            reg = CenteredIsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
+            no_zero_sw_mask = curr_sample_weight != 0  # have to mask sample weights as the CIR model can not handle it correctly.
+            # -- v5
+            X[no_zero_sw_mask, f] = reg.fit_transform(X[no_zero_sw_mask, f], y[no_zero_sw_mask, 0], sample_weight=curr_sample_weight[no_zero_sw_mask])
 
     tree.fit(X, y, sample_weight=curr_sample_weight, check_input=False)
 
