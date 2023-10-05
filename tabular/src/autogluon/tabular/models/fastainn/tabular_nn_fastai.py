@@ -104,9 +104,9 @@ class NNFastAiTabularModel(AbstractModel):
         from fastai.tabular.core import TabularPandas
         from fastcore.basics import range_of
 
-        X = self.preprocess(X, fit=True)
+        X = self.preprocess(X, fit=True, is_train=True)
         if X_val is not None:
-            X_val = self.preprocess(X_val)
+            X_val = self.preprocess(X_val, is_val=True)
 
         from fastai.tabular.core import Categorify
 

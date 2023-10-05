@@ -251,7 +251,7 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
         self.oof_pred_model_repeats[val_index] += 1
         self.bagged_ensemble_model._add_child_times_to_bag(model=fold_model)
 
-    def _predict_oof(self, fold_model, fold_ctx):
+    def _predict_oof(self, fold_model, fold_ctx, is_val=False):
         time_train_end_fold = time.time()
         fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix = self._get_fold_properties(fold_ctx)
         _, val_index = fold
@@ -267,7 +267,7 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
                 expected_remaining_time_required = expected_time_required * (folds_left - 1) / folds_to_fit
                 if expected_remaining_time_required > time_left:
                     raise TimeLimitExceeded
-        pred_proba = fold_model.predict_proba(X_val_fold)
+        pred_proba = fold_model.predict_proba(X_val_fold, is_val=is_val)
         fold_model.predict_time = time.time() - time_train_end_fold
         fold_model.val_score = fold_model.score_with_y_pred_proba(y=y_val_fold, y_pred_proba=pred_proba)
         fold_model.reduce_memory_size(remove_fit=True, remove_info=False, requires_save=True)
@@ -313,7 +313,7 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
         time_start_fold = time.time()
         time_limit_fold = self._get_fold_time_limit(fold_ctx)
         fold_model = self._fit(self.model_base, time_start_fold, time_limit_fold, fold_ctx, self.model_base_kwargs)
-        fold_model, pred_proba = self._predict_oof(fold_model, fold_ctx)
+        fold_model, pred_proba = self._predict_oof(fold_model, fold_ctx, is_val=True)
         self._update_bagged_ensemble(fold_model, pred_proba, fold_ctx)
 
     def _fit(self, model_base, time_start_fold, time_limit_fold, fold_ctx, kwargs):
@@ -390,39 +390,20 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
 def check_and_clean_oof(X_fold, y_fold, X_val_fold, y_val_fold, fold_model, kwargs_fold):
     stack_cols = kwargs_fold["feature_metadata"].get_features(required_special_types=["stack"])
     if kwargs_fold["clean_oof_predictions"] and stack_cols:
-        # X_fold_org = X_fold.copy()
-
+        from autogluon.tabular.models import NNFastAiTabularModel, TabularNeuralNetTorchModel, LinearModel, TabPFNModel
         # -- default
-        X_fold, _ = clean_oof_predictions(
+        ir_map = clean_oof_predictions(
             X_fold,
             y_fold,
+            X_val_fold,
+            y_val_fold,
             stack_cols,
             fold_model.problem_type,
-            kwargs_fold.get("sample_weight", None),
+            is_smooth_fiter=isinstance(fold_model, (NNFastAiTabularModel, TabularNeuralNetTorchModel, LinearModel, TabPFNModel)),  # FIXME: add all smooth fitters
+            sample_weight=kwargs_fold.get("sample_weight", None),
         )
-        # plot_calibration(X_fold, y_fold, stack_cols, 'After', ir_map, X_fold_org)
-        # -- v4
-        # X = pd.concat([X_fold, X_val_fold])
-        # y = pd.concat([y_fold, y_val_fold])
-        # X, _ = clean_oof_predictions(
-        #     X,
-        #     y,
-        #     stack_cols,
-        #     fold_model.problem_type,
-        #     kwargs_fold.get("sample_weight", None),
-        # )
-        # X_fold = X.iloc[:len(X_fold), :]
-        # from autogluon.core.calibrate.stacked_overfitting_mitigation import re_clean_oof_predictions
-        # X_val_fold = re_clean_oof_predictions(X_val_fold, ir_map, stack_cols, fold_model.problem_type)
-        #fold_model._ir_map = ir_map
-        #fold_model._re_ir = False
-        # X_val_fold, _ = clean_oof_predictions(
-        #     X_val_fold,
-        #     y_val_fold,
-        #     stack_cols,
-        #     fold_model.problem_type,
-        #     kwargs_fold.get("sample_weight", None),
-        # )
+        # plot_calibration(X_fold, y_fold, stack_cols, 'After', ir_map)
+        fold_model._ir_map = ir_map
 
     return X_fold, X_val_fold
 
@@ -480,7 +461,7 @@ def _ray_fit(
     fold_model.fit(X=X_fold, y=y_fold, X_val=X_val_fold, y_val=y_val_fold, time_limit=time_limit_fold, **resources, **kwargs_fold)
     time_train_end_fold = time.time()
     fold_model.fit_time = time_train_end_fold - time_start_fold
-    fold_model, pred_proba = _ray_predict_oof(fold_model, X_val_fold, y_val_fold, time_train_end_fold, resources["num_cpus"], save_bag_folds)
+    fold_model, pred_proba = _ray_predict_oof(fold_model, X_val_fold, y_val_fold, time_train_end_fold, resources["num_cpus"], save_bag_folds, is_val=True)
     save_path = fold_model.save()
     if model_sync_path is not None and not is_head_node:
         model_sync_path = model_sync_path + f"{fold_model.name}/"  # s3 path hence need "/" as the saperator
@@ -489,8 +470,8 @@ def _ray_fit(
     return fold_model.name, pred_proba, time_start_fold, time_train_end_fold, fold_model.predict_time, fold_model.predict_1_time
 
 
-def _ray_predict_oof(fold_model, X_val_fold, y_val_fold, time_train_end_fold, num_cpus=-1, save_bag_folds=True):
-    pred_proba = fold_model.predict_proba(X_val_fold, num_cpus=num_cpus)
+def _ray_predict_oof(fold_model, X_val_fold, y_val_fold, time_train_end_fold, num_cpus=-1, save_bag_folds=True, is_val=False):
+    pred_proba = fold_model.predict_proba(X_val_fold, num_cpus=num_cpus, is_val=is_val)
     time_pred_end_fold = time.time()
     fold_model.predict_time = time_pred_end_fold - time_train_end_fold
     fold_model.val_score = fold_model.score_with_y_pred_proba(y=y_val_fold, y_pred_proba=pred_proba)

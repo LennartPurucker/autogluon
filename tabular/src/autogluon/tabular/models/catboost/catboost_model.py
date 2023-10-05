@@ -92,7 +92,7 @@ class CatBoostModel(AbstractModel):
         num_cols_train = len(X.columns)
         num_classes = self.num_classes if self.num_classes else 1  # self.num_classes could be None after initialization if it's a regression problem
 
-        X = self.preprocess(X)
+        X = self.preprocess(X, is_train=True)
         cat_features = list(X.select_dtypes(include="category").columns)
         X = Pool(data=X, label=y, cat_features=cat_features, weight=sample_weight)
 
@@ -100,7 +100,7 @@ class CatBoostModel(AbstractModel):
             eval_set = None
             early_stopping_rounds = None
         else:
-            X_val = self.preprocess(X_val)
+            X_val = self.preprocess(X_val, is_val=True)
             X_val = Pool(data=X_val, label=y_val, cat_features=cat_features, weight=sample_weight_val)
             eval_set = X_val
             early_stopping_rounds = ag_params.get("early_stop", "adaptive")

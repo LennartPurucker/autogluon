@@ -3,7 +3,9 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-# from sklearn.isotonic import IsotonicRegression
+from sklearn.isotonic import IsotonicRegression
+from sklearn.calibration import _SigmoidCalibration
+
 from cir_model import CenteredIsotonicRegression
 
 from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
@@ -12,42 +14,50 @@ from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
 def clean_oof_predictions(
     X: pd.DataFrame,
     y: pd.Series,
+    X_val,
+    y_val,
     stack_cols: List[str],
     problem_type: str,
+    is_smooth_fiter: bool = False,
     sample_weight: Optional[np.ndarray] = None,
-) -> Tuple[pd.DataFrame, dict]:
+) -> dict:
     if not stack_cols:
         raise ValueError(f"stack_cols are empty!")
-    X = X.copy()
     ir_map = {}
 
     if problem_type != BINARY:
         raise ValueError(f"Unsupported Problem Type for cleaning oof predictions! Got: {problem_type}")
 
-    # TODO: verify assumption that proba are always positive class proba (think this is true)
     if sample_weight is None:
         curr_sample_weight = np.ones((len(X),), dtype=np.float64)
     else:
         curr_sample_weight = sample_weight.copy()
-    for f in stack_cols:
-        reg = CenteredIsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
-        # reg = IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
-        X[f] = reg.fit_transform(X[f], y, sample_weight=curr_sample_weight)
-        ir_map[f] = reg
-
-    return X, ir_map
-
-
-def re_clean_oof_predictions(X, ir_map, stack_cols, problem_type):
-    X = X.copy()
-
-    if problem_type != BINARY:
-        raise ValueError(f"Unsupported Problem Type for cleaning oof predictions! Got: {problem_type}")
 
     for f in stack_cols:
-        X[f] = ir_map[f].transform(X[f])
+        if any(
+            # FIXME move this information to feature metadata somehow
+            x in f
+            for x in ["NeuralNetTorch", "NeuralNetFastAI", "LinearModel", "Transformer", "FTTransformer", "TabPFN"]
+        ):
+            apply_at_train = True
+            apply_at_val = is_smooth_fiter
+            apply_at_test = is_smooth_fiter
+            reg = _SigmoidCalibration() if is_smooth_fiter else CenteredIsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
+        else:
+            apply_at_train = True
+            apply_at_val = False
+            apply_at_test = False
+            reg = (
+                CenteredIsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
+                if is_smooth_fiter
+                else IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
+            )
 
-    return X
+        reg.fit(X[f], y, sample_weight=curr_sample_weight)
+
+        ir_map[f] = [apply_at_train, apply_at_val, apply_at_test, reg]
+
+    return ir_map
 
 
 # -- Potentially usable agnostic and more efficient solution for multi or binary class from sklearns's calibration class

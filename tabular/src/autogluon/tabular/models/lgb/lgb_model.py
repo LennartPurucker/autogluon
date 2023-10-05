@@ -285,7 +285,7 @@ class LGBModel(AbstractModel):
 
         X = self.preprocess(X, is_train=True)
         if X_val is not None:
-            X_val = self.preprocess(X_val)
+            X_val = self.preprocess(X_val, is_val=True)
         # TODO: Try creating multiple Datasets for subsets of features, then combining with Dataset.add_features_from(), this might avoid memory spike
 
         y_og = None

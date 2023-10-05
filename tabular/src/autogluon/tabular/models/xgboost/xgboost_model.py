@@ -106,7 +106,7 @@ class XGBoostModel(AbstractModel):
             early_stopping_rounds = None
             eval_set = None
         else:
-            X_val = self.preprocess(X_val, is_train=False)
+            X_val = self.preprocess(X_val, is_train=False, is_val=True)
             eval_set.append((X_val, y_val))
             early_stopping_rounds = ag_params.get("early_stop", "adaptive")
             if isinstance(early_stopping_rounds, (str, tuple, list)):

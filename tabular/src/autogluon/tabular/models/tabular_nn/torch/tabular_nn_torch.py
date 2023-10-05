@@ -452,7 +452,7 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
         if isinstance(X, TabularTorchDataset):
             train_dataset = X
         else:
-            X = self.preprocess(X)
+            X = self.preprocess(X, is_train=True)
             train_dataset = self._process_train_data(
                 df=X,
                 labels=y,
@@ -466,7 +466,7 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
             if isinstance(X_val, TabularTorchDataset):
                 val_dataset = X_val
             else:
-                X_val = self.preprocess(X_val)
+                X_val = self.preprocess(X_val, is_val=True)
                 val_dataset = self._process_test_data(df=X_val, labels=y_val)
         else:
             val_dataset = None
