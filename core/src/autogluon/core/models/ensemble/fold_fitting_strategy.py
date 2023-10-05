@@ -388,6 +388,9 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
 #         plt.show()
 
 def check_and_clean_oof(X_fold, y_fold, X_val_fold, y_val_fold, fold_model, kwargs_fold):
+    # FIXME: i think this does not work for more than L2 layers at this point, as I do not update the OOF in place but only before fitting.
+    #   So predictions might not work correctly and apply the fix when needed (although I am not sure)
+
     stack_cols = kwargs_fold["feature_metadata"].get_features(required_special_types=["stack"])
     if kwargs_fold["clean_oof_predictions"] and stack_cols:
         from autogluon.tabular.models import NNFastAiTabularModel, TabularNeuralNetTorchModel, LinearModel, TabPFNModel

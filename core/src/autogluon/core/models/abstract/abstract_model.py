@@ -407,7 +407,6 @@ class AbstractModel:
             is_val = kwargs.get('is_val', False)
             X = X.copy()  # FIXME: could avoid this copy by pre-computing apply
             for f, (apply_train, apply_val, apply_test, reg) in self._ir_map.items():
-
                 apply = is_train and apply_train
                 apply = (is_val and apply_val) or apply
                 apply = ((not is_train) and (not is_val) and apply_test) or apply

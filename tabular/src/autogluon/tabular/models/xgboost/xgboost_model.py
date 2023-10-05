@@ -55,7 +55,7 @@ class XGBoostModel(AbstractModel):
         return eval_metric
 
     def _preprocess(self, X, is_train=False, max_category_levels=None, **kwargs):
-        X = super()._preprocess(X=X, **kwargs)
+        X = super()._preprocess(X=X, is_train=is_train, **kwargs)
 
         if is_train:
             if self._ohe:
