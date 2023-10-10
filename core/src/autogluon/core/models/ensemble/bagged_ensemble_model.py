@@ -213,7 +213,7 @@ class BaggedEnsembleModel(AbstractModel):
         oof_pred_model_repeats_without_0 = np.where(oof_pred_model_repeats == 0, 1, oof_pred_model_repeats)
         if oof_pred_proba.ndim == 2:
             oof_pred_model_repeats_without_0 = oof_pred_model_repeats_without_0[:, None]
-        return oof_pred_proba / oof_pred_model_repeats_without_0
+        return (oof_pred_proba / oof_pred_model_repeats_without_0).astype(np.float32)
 
     def _init_misc(self, **kwargs):
         child = self._get_model_base().convert_to_template()
@@ -722,8 +722,7 @@ class BaggedEnsembleModel(AbstractModel):
         else:
             self._oof_pred_proba += oof_pred_proba
             self._oof_pred_model_repeats += oof_pred_model_repeats
-        self._oof_pred_proba = self._oof_pred_proba.astype(np.float32)
-        
+
         self._cv_splitters += [cv_splitter for _ in range(n_repeats_started)]
         self._k_per_n_repeat += [k_fold for _ in range(n_repeats_finished)]
         self._n_repeats = n_repeats
