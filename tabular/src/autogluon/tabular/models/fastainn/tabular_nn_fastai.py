@@ -10,7 +10,9 @@ from typing import Dict, Union
 import numpy as np
 import pandas as pd
 import sklearn
-
+from autogluon.tabular.models.tabular_nn.utils.nn_architecture_utils import infer_y_range
+from sklearn.pipeline import Pipeline
+from functools import partial
 from autogluon.common.features.types import (
     R_BOOL,
     R_CATEGORY,
@@ -217,7 +219,19 @@ class NNFastAiTabularModel(AbstractModel):
         self.y_scaler = params.get("y_scaler", None)
         if self.y_scaler is None:
             if self.problem_type == REGRESSION:
-                self.y_scaler = sklearn.preprocessing.StandardScaler()
+                self.clipping = params.pop("clipping", True)
+                if not self.clipping:
+                    self.y_scaler = sklearn.preprocessing.StandardScaler()
+                else:
+                    y_min, y_max = infer_y_range(y, y_range_extend=0.05)
+                    y_scalar_custom = Pipeline(steps=[
+                        (
+                        'clipper', sklearn.preprocessing.FunctionTransformer(partial(np.clip, a_min=y_min, a_max=y_max),
+                                                                             inverse_func=partial(np.clip, a_min=y_min,
+                                                                                                  a_max=y_max))),
+                        ("scaler", sklearn.preprocessing.StandardScaler()),
+                    ])
+                    self.y_scaler = y_scalar_custom
             elif self.problem_type == QUANTILE:
                 self.y_scaler = sklearn.preprocessing.MinMaxScaler()
         else:
