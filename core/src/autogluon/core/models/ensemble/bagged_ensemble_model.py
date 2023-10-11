@@ -211,11 +211,11 @@ class BaggedEnsembleModel(AbstractModel):
         return self._oof_pred_proba_func(self._oof_pred_proba, self._oof_pred_model_repeats)
 
     @staticmethod
-    def _oof_pred_proba_func(oof_pred_proba, oof_pred_model_repeats):
+    def _oof_pred_proba_func(oof_pred_proba, oof_pred_model_repeats, return_type=np.float32):
         oof_pred_model_repeats_without_0 = np.where(oof_pred_model_repeats == 0, 1, oof_pred_model_repeats)
         if oof_pred_proba.ndim == 2:
             oof_pred_model_repeats_without_0 = oof_pred_model_repeats_without_0[:, None]
-        return (oof_pred_proba / oof_pred_model_repeats_without_0).astype(np.float32)
+        return (oof_pred_proba / oof_pred_model_repeats_without_0).astype(return_type)
 
     def _init_misc(self, **kwargs):
         child = self._get_model_base().convert_to_template()
