@@ -21,6 +21,9 @@ class XTModel(RFModel):
 
             return ExtraTreesQuantileRegressor
         else:
-            from ..rf.custom_forest import ExtraTreesClassifier
+            if clean_oof_predictions:
+                from ..rf.custom_forest import ExtraTreesClassifier
+            else:
+                from sklearn.ensemble import ExtraTreesClassifier
 
             return ExtraTreesClassifier
