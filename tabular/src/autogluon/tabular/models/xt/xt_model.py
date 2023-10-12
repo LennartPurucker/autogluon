@@ -9,7 +9,7 @@ class XTModel(RFModel):
     """
 
     def _get_model_type(self, clean_oof_predictions=False):
-        if self.problem_type in [REGRESSION, QUANTILE, MULTICLASS]:
+        if clean_oof_predictions and (self.problem_type in [REGRESSION, QUANTILE, MULTICLASS]):
             raise ValueError(f"{self.problem_type} not supported yet for clean_oof_predictions!")
 
         if self.problem_type == REGRESSION:
