@@ -62,6 +62,9 @@ from sklearn.base import (
 from sklearn.ensemble._base import BaseEnsemble, _partition_estimators
 from sklearn.exceptions import DataConversionWarning
 from sklearn.isotonic import IsotonicRegression
+from sklearn.calibration import _SigmoidCalibration
+# from autogluon.core.calibrate.temperature_scaling import tune_temperature_scaling, apply_temperature_scaling
+# from autogluon.core.data.label_cleaner import LabelCleanerMulticlassToBinary
 from sklearn.metrics import accuracy_score, r2_score
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.tree import (
@@ -188,13 +191,37 @@ def _parallel_build_trees(
 
     if stack_cols_indicator is not None:
         X = X.copy()
+        fix_sample_weight = curr_sample_weight
+        _y = y[:, 0].astype(np.float64)
+        y_min, y_max = 0, 1
+        ir_map = dict()
+
         for f in np.where(stack_cols_indicator['ir'])[0]:
-            reg = IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
-            X[:, f] = reg.fit_transform(X[:, f], y[:, 0], sample_weight=curr_sample_weight)
+            reg = IsotonicRegression(y_min=y_min, y_max=y_max, out_of_bounds="clip", increasing=True)
+            X[:, f] = reg.fit(X[:, f].astype(np.float64), _y, sample_weight=fix_sample_weight).predict(X[:, f])
+            ir_map[f] = reg
+
         for f in np.where(stack_cols_indicator['cir'])[0]:
-            reg = CenteredIsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
-            no_zero_sw_mask = curr_sample_weight != 0  # have to mask sample weights as the CIR model cannot handle it correctly otherwise.
-            X[no_zero_sw_mask, f] = reg.fit_transform(X[no_zero_sw_mask, f], y[no_zero_sw_mask, 0], sample_weight=curr_sample_weight[no_zero_sw_mask])
+            reg = CenteredIsotonicRegression(y_min=y_min, y_max=y_max, out_of_bounds="clip", increasing=True, non_centered_points=[y_min, y_max])
+            no_zero_sw_mask = fix_sample_weight != 0  # have to mask sample weights as the CIR model cannot handle it correctly otherwise.
+            X[no_zero_sw_mask, f] = reg.fit(X[no_zero_sw_mask, f].astype(np.float64), _y[no_zero_sw_mask], sample_weight=fix_sample_weight[no_zero_sw_mask]).predict(X[no_zero_sw_mask, f])
+            ir_map[f] = reg
+
+        for f in np.where(stack_cols_indicator['sig'])[0]:
+            reg = _SigmoidCalibration()
+            X[:, f] = reg.fit(X[:, f].astype(np.float64), _y, sample_weight=fix_sample_weight).predict(X[:, f])
+            ir_map[f] = reg
+
+            # -- takes very long likely due to torch requirements etc.
+            # eps = np.finfo(np.float32).eps
+            # tmp_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(X[:, f].astype(np.float64))
+            # tmp_proba = np.clip(tmp_proba, a_min=0 + eps, a_max=1 - eps)
+            # temperature_scale = tune_temperature_scaling(tmp_proba, y[:, 0])
+            # X[:, f] = apply_temperature_scaling(X[:, f], temperature_scalar=temperature_scale, problem_type='binary')
+
+        tree.ir_map = ir_map if ir_map else None
+    else:
+        tree.ir_map = None
 
     tree.fit(X, y, sample_weight=curr_sample_weight, check_input=False)
 
@@ -650,13 +677,17 @@ class BaseForest(MultiOutputMixin, BaseEnsemble, metaclass=ABCMeta):
         return all_importances / np.sum(all_importances)
 
 
-def _accumulate_prediction(predict, X, out, lock):
+def _accumulate_prediction(predict, ir_map, X, out, lock):
     """
     This is a utility function for joblib's Parallel.
 
     It can't go locally in ForestClassifier or ForestRegressor, because joblib
     complains that it cannot pickle it when placed there.
     """
+    if ir_map is not None:
+        X = X.copy()
+        for f, reg in ir_map.items():
+            X[:, f] = reg.predict(X[:, f])
     prediction = predict(X, check_input=False)
     with lock:
         if len(out) == 1:
@@ -887,7 +918,7 @@ class ForestClassifier(ClassifierMixin, BaseForest, metaclass=ABCMeta):
         ]
         lock = threading.Lock()
         Parallel(n_jobs=n_jobs, verbose=self.verbose, require="sharedmem")(
-            delayed(_accumulate_prediction)(e.predict_proba, X, all_proba, lock)
+            delayed(_accumulate_prediction)(e.predict_proba, e.ir_map, X, all_proba, lock)
             for e in self.estimators_
         )
 
@@ -1008,7 +1039,7 @@ class ForestRegressor(RegressorMixin, BaseForest, metaclass=ABCMeta):
         # Parallel loop
         lock = threading.Lock()
         Parallel(n_jobs=n_jobs, verbose=self.verbose, require="sharedmem")(
-            delayed(_accumulate_prediction)(e.predict, X, [y_hat], lock)
+            delayed(_accumulate_prediction)(e.predict, X, [y_hat], lock) # FIXME: support for ir_map at predict for regression
             for e in self.estimators_
         )
 

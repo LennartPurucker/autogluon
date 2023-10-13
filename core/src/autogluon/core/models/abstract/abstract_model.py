@@ -408,13 +408,15 @@ class AbstractModel:
 
         # -- Dynamic OOF Cleaner for bagged models.
         if self._ir_map is not None:
-            is_train = kwargs.get('fit', False) or kwargs.get('is_train', False)
-            is_val = kwargs.get('is_val', False)
+            is_train = kwargs.get('fit', False) or kwargs.get('is_train', False)  # X is used for model training
+            is_val = kwargs.get('is_val', False)  # X is used for early stopping etc
+            is_val_predict = kwargs.get('is_val_predict', False)  # X is used for val score and next level OOF
             X = X.copy()  # FIXME: could avoid this copy by pre-computing apply
-            for f, (apply_train, apply_val, apply_test, reg) in self._ir_map.items():
+            for f, (apply_train, apply_at_val_train, apply_at_val_predict, apply_test, reg) in self._ir_map.items():
                 apply = is_train and apply_train
-                apply = (is_val and apply_val) or apply
-                apply = ((not is_train) and (not is_val) and apply_test) or apply
+                apply = (is_val and apply_at_val_train) or apply
+                apply = (is_val_predict and apply_at_val_predict) or apply
+                apply = ((not is_train) and (not is_val) and (not is_val_predict) and apply_test) or apply
 
                 if apply:
                     # print('apply for', f, self.name, type(self), f"Train: {is_train} | Val: {is_val} | Test: {(not is_train) and (not is_val)}")

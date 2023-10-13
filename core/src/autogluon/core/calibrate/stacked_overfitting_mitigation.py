@@ -9,17 +9,21 @@ from sklearn.calibration import _SigmoidCalibration
 from cir_model import CenteredIsotonicRegression
 
 from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
+from functools import partial
+from sklearn.pipeline import Pipeline
+from ._custom_function_transformer import FunctionTransformer
 
 
+# Clean Code
 def clean_oof_predictions(
-    X: pd.DataFrame,
-    y: pd.Series,
-    X_val,
-    y_val,
-    stack_cols: List[str],
-    problem_type: str,
-    is_smooth_fiter: bool = False,
-    sample_weight: Optional[np.ndarray] = None,
+        X: pd.DataFrame,
+        y: pd.Series,
+        X_val,
+        y_val,
+        stack_cols: List[str],
+        problem_type: str,
+        fold_model=None,
+        sample_weight: Optional[np.ndarray] = None,
 ) -> dict:
     if not stack_cols:
         raise ValueError(f"stack_cols are empty!")
@@ -28,36 +32,150 @@ def clean_oof_predictions(
     if problem_type != BINARY:
         raise ValueError(f"Unsupported Problem Type for cleaning oof predictions! Got: {problem_type}")
 
+    from autogluon.tabular.models import NNFastAiTabularModel, TabularNeuralNetTorchModel, LGBModel, \
+        CatBoostModel  # future LinearModel, TabPFNModel
+    is_smooth_fiter = (fold_model is None) or isinstance(fold_model, (NNFastAiTabularModel, TabularNeuralNetTorchModel))
+
     if sample_weight is None:
         curr_sample_weight = np.ones((len(X),), dtype=np.float64)
     else:
         curr_sample_weight = sample_weight.copy()
 
-    for f in stack_cols:
-        if any(
-            # FIXME move this information to feature metadata somehow
-            x in f
-            for x in ["NeuralNetTorch", "NeuralNetFastAI", "LinearModel", "Transformer", "FTTransformer", "TabPFN"]
-        ):
-            apply_at_train = True
-            apply_at_val = is_smooth_fiter
-            apply_at_test = is_smooth_fiter
-            reg = _SigmoidCalibration() if is_smooth_fiter else CenteredIsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
+    for f_idx, f in enumerate(sorted(stack_cols)):
+
+        proba = X[f].values.astype(np.float64)
+        y_fit = y
+        fit_curr_sample_weight = curr_sample_weight
+        y_min = 0
+        y_max = 1
+
+        apply_at_train, apply_at_val_train = True, True
+        apply_at_val_predict, apply_at_test = False, True
+
+        # FIXME move this information to feature metadata somehow
+        if any(x in f for x in ["NeuralNetTorch", "NeuralNetFastAI"]):
+            # for future: "LinearModel", "Transformer", "FTTransformer", "TabPFN"
+            reg = _SigmoidCalibration().fit(proba, y_fit, sample_weight=fit_curr_sample_weight)
+            # reg = ts_calibration(proba, y_fit, y_min=y_min, y_max=y_max, sample_weight=curr_sample_weight, problem_type=problem_type)
+        elif any(x in f for x in ["KNeighbors", "RandomForest", "ExtraTrees"]):  # "CatBoost", "LightGBMXT",
+            reg = CenteredIsotonicRegression(y_min=y_min, y_max=y_max, out_of_bounds="clip", increasing=True,
+                                             non_centered_points=[y_min, y_max])
+            reg.fit(proba, y_fit, sample_weight=fit_curr_sample_weight)
         else:
-            apply_at_train = True
-            apply_at_val = False
-            apply_at_test = False
-            reg = (
-                CenteredIsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
-                if is_smooth_fiter
-                else IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True)
-            )
+            reg = IsotonicRegression(y_min=y_min, y_max=y_max, out_of_bounds="clip", increasing=True)
+            reg.fit(proba, y_fit, sample_weight=fit_curr_sample_weight)
 
-        reg.fit(X[f], y, sample_weight=curr_sample_weight)
+        ir_map[f] = [apply_at_train, apply_at_val_train, apply_at_val_predict, apply_at_test, reg]
 
-        ir_map[f] = [apply_at_train, apply_at_val, apply_at_test, reg]
+    # plot_insights(X, tmp_y, stack_cols, ir_map, "Train", reverse_offset)
+    # plot_insights(X_val, y_val, stack_cols, ir_map, "Val", y_offset)
 
     return ir_map
+
+# def inject_offset(X, offset):
+#     return (X + offset).astype(np.float64)
+#
+#
+# def reverse_offset(X, offset):
+#     return (X - offset).astype(np.float32)
+# def const_maker(X):
+#     return np.full_like(X, fill_value=1)
+#
+#
+# is_smooth_fiter_disc = isinstance(fold_model, LGBModel) and fold_model._user_params.get('extra_trees', False)
+# is_smooth_fiter_disc = is_smooth_fiter_disc or isinstance(fold_model, CatBoostModel)
+
+#
+# from .temperature_scaling import tune_temperature_scaling, apply_temperature_scaling
+# from ..data.label_cleaner import LabelCleanerMulticlassToBinary
+# def ts_calibration(proba,  y, y_min, y_max, sample_weight, problem_type):
+#     # reg = ts_calibration(proba, y, y_min=y_min, y_max=y_max, sample_weight=curr_sample_weight, problem_type=problem_type)
+#
+#     eps = np.finfo(np.float32).eps
+#     tmp_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(proba)
+#     tmp_proba = np.clip(tmp_proba, a_min=y_min + eps, a_max=y_max - eps)
+#     temperature_scale = tune_temperature_scaling(tmp_proba, y.values)
+#
+#     reg = Pipeline(
+#         [
+#             ("temperature_scaling", FunctionTransformer(
+#                 func=partial(apply_temperature_scaling, temperature_scalar=temperature_scale,
+#                              problem_type=problem_type))),
+#         ]
+#     )
+#     return reg
+#
+# def logit_func(Xf):
+#     return np.log(np.clip(Xf, a_min=np.finfo(np.float32).eps, a_max=1))
+#
+# def dtype_func(X, dtype):
+#     return X.astype(dtype)
+#
+# def id_func(X, offset=0, offset_mult=1):
+#     return (X/offset_mult) - offset   # np.full_like(X, fill_value=1)
+#
+
+# def passthrough(X):
+#     return X
+#
+# def plot_calibration(X, y, stack_cols, ir_map, plt_title):
+#     import matplotlib.pyplot as plt
+#     from sklearn.calibration import CalibrationDisplay
+#
+#     fig, ax = plt.subplots(figsize=(10, 10))
+#     colors = plt.get_cmap("tab20")
+#     colors.colors = colors.colors + plt.get_cmap("tab20b").colors
+#     colors.colors = colors.colors + plt.get_cmap("tab20c").colors
+#     colors.colors = colors.colors + plt.get_cmap("Paired").colors
+#     colors.N = len(colors.colors)
+#
+#     for i, f in enumerate(stack_cols):
+#         display = CalibrationDisplay.from_predictions(y, X[f], n_bins=20, name="Before-" + f, ax=ax, color=colors((i) + (2 * i)), strategy="quantile")
+#         display = CalibrationDisplay.from_predictions(
+#             y, ir_map[f][-1].predict(X[f]), n_bins=20, name="After-" + f, ax=ax, color=colors((i + 1) + (2 * i)), strategy="quantile"
+#         )
+#     plt.title(plt_title)
+#     plt.show()
+#
+#
+# def plot_thresholds(X, y, stack_cols, ir_map, plt_title, reverse_offset):
+#     import matplotlib.pyplot as plt
+#
+#     fig, ax = plt.subplots(ncols=len(stack_cols), figsize=(20, 6))
+#
+#     for f_idx, f in enumerate(stack_cols):
+#         ax[f_idx].plot(X[f], y, "C0.", markersize=12)
+#         ax[f_idx].plot(X[f], ir_map[f][-1].predict(X[f]), "C2.", markersize=12)
+#
+#         x_th = None
+#         if hasattr(ir_map[f][-1], "X_thresholds_"):
+#             x_th, y_th = ir_map[f][-1].X_thresholds_, ir_map[f][-1].y_thresholds_
+#         elif hasattr(ir_map[f][-1], "named_steps") and hasattr(ir_map[f][-1][-1], "X_thresholds_"):
+#             x_th, y_th = ir_map[f][-1][-1].X_thresholds_, ir_map[f][-1][-1].y_thresholds_
+#         elif hasattr(ir_map[f][-1], "named_steps") and hasattr(ir_map[f][-1][0], "X_thresholds_"):
+#             x_th, y_th = ir_map[f][-1][0].X_thresholds_, ir_map[f][-1][0].y_thresholds_
+#         elif hasattr(ir_map[f][-1], "named_steps") and hasattr(ir_map[f][-1][1], "X_thresholds_"):
+#             x_th, y_th = ir_map[f][-1][1].X_thresholds_, ir_map[f][-1][1].y_thresholds_
+#
+#         if x_th is not None:
+#             y_th = reverse_offset(y_th)
+#             ax[f_idx].plot(x_th, y_th, "C1.-", markersize=12, alpha=0.5)
+#             print(f, y_th)
+#
+#         ax[f_idx].plot([0, 1], [0, 1], "C8.-", markersize=12, alpha=0.5)
+#
+#         ax[f_idx].set_title(f)
+#         ax[f_idx].set_xlim(-0.1, 1.1)
+#
+#     fig.supxlabel("Proba L1")
+#     fig.supylabel("Label / Adjusted Proba")
+#     fig.suptitle(plt_title + f" | Offset: {reverse_offset}")
+#     plt.show()
+#
+#
+# def plot_insights(X, y, stack_cols, ir_map, plt_title, reverse_offset):
+#     # plot_calibration(X, y, stack_cols, ir_map, plt_title)
+#     plot_thresholds(X, y, stack_cols, ir_map, plt_title, reverse_offset)
 
 
 # -- Potentially usable agnostic and more efficient solution for multi or binary class from sklearns's calibration class
@@ -137,3 +255,128 @@ def clean_oof_predictions(
 #         #         from autogluon.core.calibrate.stacked_overfitting_mitigation import re_clean_oof_predictions
 #         #         X = re_clean_oof_predictions(X, self._ir_map, stack_cols, self.problem_type)
 #
+#         # labels = np.unique(y)
+#         # y_prob = X[f]
+#         # n_bins= 20
+#         # y_true = y == 1
+#         #
+#         # quantiles = np.linspace(0, 1, n_bins + 1)
+#         # bins = np.percentile(y_prob, quantiles * 100)
+#         # #bins = np.linspace(0.0, 1.0, n_bins + 1)
+#         # binids = np.searchsorted(bins[1:-1], y_prob)
+#         #
+#         # bin_sums = np.bincount(binids, weights=y_prob, minlength=len(bins))
+#         # bin_true = np.bincount(binids, weights=y_true, minlength=len(bins))
+#         # bin_total = np.bincount(binids, minlength=len(bins))
+#         #
+#         # nonzero = bin_total != 0
+#         # prob_true = bin_true[nonzero] / bin_total[nonzero]
+#         # prob_pred = bin_sums[nonzero] / bin_total[nonzero]
+#         # weight = abs(prob_pred - prob_true)
+#         # h_mask = prob_pred > prob_true
+#         #
+#         # # weight[~h_mask] = 1
+#         # # weight[h_mask] = 10
+#         # weight += 1
+#         #
+#         # map_weights = {k: v for k, v in zip(np.arange(len(bins))[nonzero], weight)}
+#         # curr_sample_weight *= np.array(list(map(lambda x: map_weights[x], binids)))
+#
+#         #   # _SigmoidCalibration()
+#         #
+#         # X[f] = reg.predict(X[f]) - 1
+#
+#         # FIXME: round thresholds? - minimal numerical differences in threshold can make larger differnce in proba
+#         #       -> round input to IR! looks promising... .round(decimals=2)
+#         #       -> add noise
+#         #       -> use pseudo labels? majority vote, current f, GES l1
+#         #   -> higher precision output?
+#         #   -> higher precision input to IR? (offset)
+#
+#         # tmp_y = y
+#
+#         # preds = X[stack_cols].copy()
+#         # presd = 1
+#         # for _f, opt_t in opt_threshold_map.items():
+#         #     preds.loc[X[_f] < opt_t, _f] = 0
+#         #
+#         # tmp_y = np.mean(preds, axis=1)
+#         # certain_mask = (tmp_y == 1)  | (tmp_y == 0)
+#         # tmp_y[certain_mask] = y[certain_mask]
+#
+#         # preds = preds.sum(axis=1)
+#         # votes = np.full_like(preds, 0)
+#         # votes[preds > np.ceil(len(stack_cols) / 2)] = 1
+#         # tmp_y = votes
+#
+#         # tmp_y = np.full_like(y, fill_value=1)
+#         # tmp_y[X[f] < opt_threshold_map[f]] = 0
+#         # choice(np.arange(10)
+#
+#         # Random sample weights is like noise btw.
+#         # curr_sample_weight = np.random.RandomState(42 + f_idx).poisson(5, size=len(tmp_y)) # np.clip(np.random.RandomState(42).normal(5, 0.5, size=len(tmp_y)), a_min=0.01, a_max=None) #
+#
+#         # reverse_offset = partial(id_func, offset=y_offset,offset_mult=y_offset_mult)
+#         # _SigmoidCalibration() if is_smooth_fiter else CenteredIsotonicRegression(y_min=y_min, y_max=y_max, out_of_bounds="clip", increasing=True)
+#         # reg = IsotonicRegression(y_min=y_min, y_max=y_max, out_of_bounds="clip", increasing=True)
+#         # apply_at_train, apply_at_val_train, apply_at_val_predict,  apply_at_test = True, False, False, False
+#         #
+#         # reg.fit(X[f].values.astype(np.float64), (tmp_y + y_offset)*y_offset_mult, sample_weight=curr_sample_weight)
+#         # reg = Pipeline(
+#         #     [
+#         #         ("inject_dtype", FunctionTransformer(func=partial(dtype_func, dtype=np.float32))),
+#         #         ("reg", reg),
+#         #         ("repair_offset", FunctionTransformer(func=reverse_offset)),
+#         #         ("inject_dtype", FunctionTransformer(func=partial(dtype_func, dtype=np.float32))),
+#         #     ]
+#         # )
+#
+#         # reg = Pipeline(
+#         #     [
+#         #         # ("logit_maker", FunctionTransformer(func=logit_func)),
+#         #         # ("passthrough", FunctionTransformer(func=passthrough)),
+#         #         # ("const_maker", FunctionTransformer(func=const_maker)),
+#         #     ]
+#         # )
+#
+#         # IR (v2)
+#         # reg = IsotonicRegression()
+#         # reg.fit(X[f].values.astype(np.float64), y, sample_weight=curr_sample_weight)
+#         # apply_at_train, apply_at_val_train, apply_at_val_predict, apply_at_test = True, False, False, False
+#
+#
+#         # Plat scaling
+#         # reg = _SigmoidCalibration()
+#         # reg.fit(X[f].values.astype(np.float64), y, sample_weight=curr_sample_weight)
+#         # apply_at_train, apply_at_val_train, apply_at_val_predict, apply_at_test = True, False, False, False
+#
+#         # Temperature scaling
+#         # tmp_f = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(X[f].values.astype(np.float64))
+#         # tmp_f = np.clip(tmp_f, a_min=np.finfo(np.float32).eps, a_max=1-np.finfo(np.float32).eps)
+#         # temperature_scale = tune_temperature_scaling(tmp_f, y.values, init_val=1, max_iter=1000, lr=0.01)
+#         # if temperature_scale is None:
+#         #     raise ValueError("fix edge case pls")
+#         #
+#         # reg = Pipeline(
+#         #     [
+#         #         ("temperature_scaling", FunctionTransformer(func=partial(apply_temperature_scaling, temperature_scalar=temperature_scale, problem_type=problem_type))),
+#         #     ]
+#         # )
+#         #
+#         # apply_at_train, apply_at_val_train  , apply_at_val_predict, apply_at_test = True, True, False, False
+#
+#
+#         # tune_temperature_scaling()
+#
+#         # print(reg.predict(X[f]).dtype)
+
+#     # Make sure we have iloc index no matter the index of dataframes
+#     best_oof , opt_threshold, opt_threshold_map = best_oof
+#     all_index = list(X.index) + list(X_val.index)
+#     iloc_index = np.where(np.arange(len(all_index))[np.argsort(all_index)] < len(X.index))[0]
+#     val_best_oof = best_oof[iloc_index]
+#     y_offset = 0
+#     y_offset_mult = 1
+#     y_min = (0 + y_offset) * y_offset_mult
+#     y_max = (1 + y_offset) * y_offset_mult
+# core_kwargs['best_oof'] = None # [self.get_model_oof(self.model_best), self.calibrate_decision_threshold(metric='balanced_accuracy'), {k: self.calibrate_decision_threshold(metric='balanced_accuracy', model=k) for k in  base_model_names}]

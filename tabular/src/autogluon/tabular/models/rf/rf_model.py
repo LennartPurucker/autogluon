@@ -197,9 +197,12 @@ class RFModel(AbstractModel):
 
         model = model_cls(**params)
         if clean_oof_predictions_needed:
-            cir_features = [_f for _f in self._features_internal if any(_x in _f for _x in ["NeuralNetTorch", "NeuralNetFastAI", "LinearModel", "Transformer", "FTTransformer", "TabPFN"] )]
+            sig_features = [_f for _f in self._features_internal if any(_x in _f for _x in ["NeuralNetTorch", "NeuralNetFastAI"])]
+            cir_features = [_f for _f in self._features_internal if any(_x in _f for _x in ["KNeighbors", "RandomForest", "ExtraTrees"])]
+            all_extra = sig_features + cir_features
             extra_fit_para = dict(stack_cols_indicator=dict(
-                ir=[1 if ((_f in stack_cols) and (_f not in cir_features)) else 0 for _f in self._features_internal],
+                ir=[1 if ((_f in stack_cols) and (_f not in all_extra)) else 0 for _f in self._features_internal],
+                sig=[1 if ((_f in stack_cols) and (_f in sig_features)) else 0 for _f in self._features_internal],
                 cir=[1 if ((_f in stack_cols) and (_f in cir_features)) else 0 for _f in self._features_internal])
             )
         else:
