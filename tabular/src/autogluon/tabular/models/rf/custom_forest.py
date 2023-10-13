@@ -195,22 +195,23 @@ def _parallel_build_trees(
         _y = y[:, 0].astype(np.float64)
         y_min, y_max = 0, 1
         ir_map = dict()
+        apply_at_val_predict, apply_at_test = False, True
 
         for f in np.where(stack_cols_indicator['ir'])[0]:
             reg = IsotonicRegression(y_min=y_min, y_max=y_max, out_of_bounds="clip", increasing=True)
             X[:, f] = reg.fit(X[:, f].astype(np.float64), _y, sample_weight=fix_sample_weight).predict(X[:, f])
-            ir_map[f] = reg
+            ir_map[f] = (apply_at_val_predict, apply_at_test, reg)
 
         for f in np.where(stack_cols_indicator['cir'])[0]:
             reg = CenteredIsotonicRegression(y_min=y_min, y_max=y_max, out_of_bounds="clip", increasing=True, non_centered_points=[y_min, y_max])
             no_zero_sw_mask = fix_sample_weight != 0  # have to mask sample weights as the CIR model cannot handle it correctly otherwise.
             X[no_zero_sw_mask, f] = reg.fit(X[no_zero_sw_mask, f].astype(np.float64), _y[no_zero_sw_mask], sample_weight=fix_sample_weight[no_zero_sw_mask]).predict(X[no_zero_sw_mask, f])
-            ir_map[f] = reg
+            ir_map[f] = (apply_at_val_predict, apply_at_test, reg)
 
         for f in np.where(stack_cols_indicator['sig'])[0]:
             reg = _SigmoidCalibration()
             X[:, f] = reg.fit(X[:, f].astype(np.float64), _y, sample_weight=fix_sample_weight).predict(X[:, f])
-            ir_map[f] = reg
+            ir_map[f] = (apply_at_val_predict, apply_at_test, reg)
 
             # -- takes very long likely due to torch requirements etc.
             # eps = np.finfo(np.float32).eps
@@ -686,8 +687,9 @@ def _accumulate_prediction(predict, ir_map, X, out, lock):
     """
     if ir_map is not None:
         X = X.copy()
-        for f, reg in ir_map.items():
-            X[:, f] = reg.predict(X[:, f])
+        for f, (_, apply_at_test, reg) in ir_map.items():
+            if apply_at_test:
+                X[:, f] = reg.predict(X[:, f])
     prediction = predict(X, check_input=False)
     with lock:
         if len(out) == 1:
@@ -753,6 +755,11 @@ class ForestClassifier(ClassifierMixin, BaseForest, metaclass=ABCMeta):
         y_pred : ndarray of shape (n_samples, n_classes, n_outputs)
             The OOB associated predictions.
         """
+        if tree.ir_map is not None:
+            X = X.copy()
+            for f, (apply_at_val_predict, _, reg) in tree.ir_map.items():
+                if apply_at_val_predict:
+                    X[:, f] = reg.predict(X[:, f])
         y_pred = tree.predict_proba(X, check_input=False)
         y_pred = np.array(y_pred, copy=False)
         if y_pred.ndim == 2:
