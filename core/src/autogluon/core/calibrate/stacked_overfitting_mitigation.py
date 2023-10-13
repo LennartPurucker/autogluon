@@ -11,7 +11,6 @@ from cir_model import CenteredIsotonicRegression
 from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
 from functools import partial
 from sklearn.pipeline import Pipeline
-from ._custom_function_transformer import FunctionTransformer
 
 
 # Clean Code
@@ -84,7 +83,7 @@ def clean_oof_predictions(
 #
 # is_smooth_fiter_disc = isinstance(fold_model, LGBModel) and fold_model._user_params.get('extra_trees', False)
 # is_smooth_fiter_disc = is_smooth_fiter_disc or isinstance(fold_model, CatBoostModel)
-
+# from ._custom_function_transformer import FunctionTransformer
 #
 # from .temperature_scaling import tune_temperature_scaling, apply_temperature_scaling
 # from ..data.label_cleaner import LabelCleanerMulticlassToBinary
