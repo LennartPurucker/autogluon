@@ -542,16 +542,23 @@ class AbstractTrainer:
             **core_kwargs,
         )
 
+        # FIXME(MERGE): Only a full ensemble at most 2 stacking levels.
+        #  Need to implement this differently for merge and get all previous models and only do it for the last level.
+        if (level > 1) and (core_kwargs.get("ag_args_fit", None) is not None) and core_kwargs["ag_args_fit"].get("full_last_weighted_ensemble", False):
+            aux_level_base_model_names = core_models + base_model_names
+        else:
+            aux_level_base_model_names = core_models
+
         if X_val is None:
             aux_models = self.stack_new_level_aux(
-                X=X, y=y, base_model_names=core_models, level=level + 1, infer_limit=infer_limit, infer_limit_batch_size=infer_limit_batch_size, **aux_kwargs
+                X=X, y=y, base_model_names=aux_level_base_model_names, level=level + 1, infer_limit=infer_limit, infer_limit_batch_size=infer_limit_batch_size, **aux_kwargs
             )
         else:
             aux_models = self.stack_new_level_aux(
                 X=X_val,
                 y=y_val,
                 fit=False,
-                base_model_names=core_models,
+                base_model_names=aux_level_base_model_names,
                 level=level + 1,
                 infer_limit=infer_limit,
                 infer_limit_batch_size=infer_limit_batch_size,
