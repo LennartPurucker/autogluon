@@ -528,6 +528,18 @@ class AbstractTrainer:
         if name_suffix:
             core_kwargs["name_suffix"] = core_kwargs.get("name_suffix", "") + name_suffix
             aux_kwargs["name_suffix"] = aux_kwargs.get("name_suffix", "") + name_suffix
+        if level == 2:
+            for l_d in models.keys():
+
+                tmp_dict = {}
+                for bm_name, bm_configs in models[l_d].items():
+                    new_configs = [bm_config for bm_config in bm_configs if ((not isinstance(bm_config, dict)) or bm_config.get("allowed_oof_features", None) != "do-not-stack-model")]
+
+                    if new_configs:
+                        tmp_dict[bm_name] = new_configs
+
+                models[l_d] = tmp_dict
+
         core_models = self.stack_new_level_core(
             X=X,
             y=y,

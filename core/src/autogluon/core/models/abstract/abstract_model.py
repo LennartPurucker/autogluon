@@ -149,6 +149,10 @@ class AbstractModel:
         self.compile_time = None  # Time taken to compile the model in seconds
         self.val_score = None  # Score with eval_metric (Validation data)
 
+        hyperparameters = hyperparameters.copy()
+        self._allowed_oof_features = hyperparameters.pop('allowed_oof_features', None)
+        self._updated_features = False
+
         self._user_params, self._user_params_aux = self._init_user_params(params=hyperparameters)
 
         self.params = {}
@@ -384,6 +388,23 @@ class AbstractModel:
         Preprocesses the input data into internal form ready for fitting or inference.
         It is not recommended to override this method, as it is closely tied to multi-layer stacking logic. Instead, override `_preprocess`.
         """
+        if self._allowed_oof_features is not None:
+            oof_features = self.feature_metadata.get_features(required_special_types=["stack"])
+
+            if oof_features:
+                if not self._updated_features:
+                    other_features = list(set(X.columns) - set(oof_features))
+                    allowed_oof_features = list(set(self._allowed_oof_features).intersection(set(oof_features)))
+                    self._allowed_features = other_features + allowed_oof_features
+                    remove_features = list(set(X.columns) - set(self._allowed_features))
+
+                    self.feature_metadata = self._feature_metadata = self.feature_metadata.remove_features(remove_features)
+                    self.features = [f for f in self.features if f not in remove_features]
+                    self._features_internal = [f for f in self._features_internal if f not in remove_features]
+                    self._updated_features = True
+
+                X = X[self._allowed_features]
+
         if preprocess_nonadaptive:
             X = self._preprocess_nonadaptive(X, **kwargs)
         if preprocess_stateful:
