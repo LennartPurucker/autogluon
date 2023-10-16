@@ -334,6 +334,14 @@ def clean_model_cfg(model_cfg: dict, model_type=None, ag_args=None, ag_args_ense
         model_cfg[AG_ARGS] = default_ag_args
     if default_ag_args_ensemble is not None:
         default_ag_args_ensemble.update(model_cfg.get(AG_ARGS_ENSEMBLE, dict()))
+        # Handle special case of use child oof
+        if default_ag_args_ensemble.get("use_cv_instead_of_child_oof", False):
+            if default_ag_args_ensemble.get("use_child_oof", False):
+                # Remove use child oof
+                default_ag_args_ensemble.pop("use_child_oof")
+            else:
+                # Parameter not needed as child oof are not used
+                default_ag_args_ensemble.pop("use_cv_instead_of_child_oof")
         model_cfg[AG_ARGS_ENSEMBLE] = default_ag_args_ensemble
     return model_cfg
 
