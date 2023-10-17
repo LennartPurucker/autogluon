@@ -582,7 +582,7 @@ class AbstractTrainer:
             if X_val is None:
                 add_aux_models = self.stack_new_level_aux(
                     X=X, y=y, base_model_names=all_base_model_names, level=level + 1, infer_limit=infer_limit,
-                    infer_limit_batch_size=infer_limit_batch_size, **aux_kwargs
+                    infer_limit_batch_size=infer_limit_batch_size, name_extra="_FULL", **aux_kwargs
                 )
             else:
                 add_aux_models = self.stack_new_level_aux(
@@ -593,6 +593,7 @@ class AbstractTrainer:
                     level=level + 1,
                     infer_limit=infer_limit,
                     infer_limit_batch_size=infer_limit_batch_size,
+                    name_extra="_FULL",
                     **aux_kwargs,
                 )
             aux_models += add_aux_models
@@ -735,6 +736,7 @@ class AbstractTrainer:
         infer_limit_batch_size=None,
         use_val_cache=True,
         fit_weighted_ensemble=True,
+        name_extra=None,
     ) -> List[str]:
         """
         Trains auxiliary models (currently a single weighted ensemble) using the provided base models.
@@ -759,6 +761,10 @@ class AbstractTrainer:
             X, w = extract_column(X, self.sample_weight)  # TODO: consider redesign with w as separate arg instead of bundled inside X
             if w is not None:
                 X_stack_preds[self.sample_weight] = w.values / w.mean()
+
+        child_hyperparameters = None
+        if name_extra is not None:
+            child_hyperparameters = {"ag_args": {"name_suffix": name_extra}}
         return self.generate_weighted_ensemble(
             X=X_stack_preds,
             y=y,
@@ -772,6 +778,7 @@ class AbstractTrainer:
             name_suffix=name_suffix,
             get_models_func=get_models_func,
             check_if_best=check_if_best,
+            child_hyperparameters=child_hyperparameters,
         )
 
     def predict(self, X, model=None):
