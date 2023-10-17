@@ -576,6 +576,27 @@ class AbstractTrainer:
                 infer_limit_batch_size=infer_limit_batch_size,
                 **aux_kwargs,
             )
+
+        if (level > 1) and (core_kwargs.get("ag_args_fit", None) is not None) and core_kwargs["ag_args_fit"].get("full_additional_last_weighted_ensemble", False):
+            all_base_model_names = self.get_model_names(stack_name="core")
+            if X_val is None:
+                add_aux_models = self.stack_new_level_aux(
+                    X=X, y=y, base_model_names=all_base_model_names, level=level + 1, infer_limit=infer_limit,
+                    infer_limit_batch_size=infer_limit_batch_size, **aux_kwargs
+                )
+            else:
+                add_aux_models = self.stack_new_level_aux(
+                    X=X_val,
+                    y=y_val,
+                    fit=False,
+                    base_model_names=all_base_model_names,
+                    level=level + 1,
+                    infer_limit=infer_limit,
+                    infer_limit_batch_size=infer_limit_batch_size,
+                    **aux_kwargs,
+                )
+            aux_models += add_aux_models
+
         return core_models, aux_models
 
     def stack_new_level_core(
