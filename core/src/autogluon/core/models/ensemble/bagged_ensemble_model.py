@@ -261,6 +261,9 @@ class BaggedEnsembleModel(AbstractModel):
         use_cv_instead_of_child_oof = self.params.get("use_cv_instead_of_child_oof", False)
         n_repeats = 1 if use_cv_instead_of_child_oof else n_repeats
 
+        if use_cv_instead_of_child_oof and self.is_fit() and (n_repeat_start > 0):
+            return self
+
         use_child_oof = self.params.get("use_child_oof", False)
         if use_child_oof:
             if self.is_fit():
