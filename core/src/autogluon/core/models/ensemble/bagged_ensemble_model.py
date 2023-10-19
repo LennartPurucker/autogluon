@@ -699,10 +699,11 @@ class BaggedEnsembleModel(AbstractModel):
             fold_fitting_strategy_args["model_sync_path"] = DistributedContext.get_model_sync_path()
         fold_fitting_strategy: FoldFittingStrategy = fold_fitting_strategy_cls(**fold_fitting_strategy_args)
 
-        if True or type(fold_fitting_strategy) == ParallelLocalFoldFittingStrategy and not fold_fitting_strategy.is_mem_sufficient():
+        if type(fold_fitting_strategy) == ParallelLocalFoldFittingStrategy and not fold_fitting_strategy.is_mem_sufficient():
             # If memory is not sufficient, fall back to sequential fold strategy
             # fold_fitting_strategy: FoldFittingStrategy = SequentialLocalFoldFittingStrategy(**fold_fitting_strategy_args)
             fold_fitting_strategy_args["num_folds_parallel"] = 1
+            del fold_fitting_strategy
             fold_fitting_strategy: FoldFittingStrategy = fold_fitting_strategy_cls(**fold_fitting_strategy_args)
             logger.log(
                 30,
