@@ -1748,7 +1748,7 @@ class AbstractTrainer:
             level=level,
             time_limit=time_limit,
             ens_sample_weight=w,
-            fit_kwargs=dict(num_classes=self.num_classes, groups=None, so_free_model=True),  # FIXME: Is this the right way to do this?
+            fit_kwargs=dict(num_classes=self.num_classes, groups=None, so_free_model= level <= 2),  # FIXME: Is this the right way to do this?
         )
         for weighted_ensemble_model_name in models:
             if check_if_best and weighted_ensemble_model_name in self.get_model_names():

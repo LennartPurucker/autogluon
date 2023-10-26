@@ -409,6 +409,8 @@ class AbstractModel:
             X = self._preprocess_nonadaptive(X, **kwargs)
         if preprocess_stateful:
             X = self._preprocess(X, **kwargs)
+        if preprocess_stateful and hasattr(self, "_preprocess_extra"):
+            X = self._preprocess_extra(X, **kwargs)
         return X
 
     # TODO: Remove kwargs?
@@ -434,6 +436,10 @@ class AbstractModel:
             is_val_predict = kwargs.get('is_val_predict', False)  # X is used for val score and next level OOF
             X = X.copy()  # FIXME: could avoid this copy by pre-computing apply
             for f, (apply_train, apply_at_val_train, apply_at_val_predict, apply_test, reg) in self._ir_map.items():
+
+                if f not in X:
+                    continue
+
                 apply = is_train and apply_train
                 apply = (is_val and apply_at_val_train) or apply
                 apply = (is_val_predict and apply_at_val_predict) or apply

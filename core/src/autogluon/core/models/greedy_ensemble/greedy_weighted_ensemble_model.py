@@ -31,7 +31,7 @@ class GreedyWeightedEnsembleModel(AbstractModel):
         return default_auxiliary_params
 
     # TODO: Consider moving convert_pred_probas_df_to_list into inner model to ensure X remains a dataframe after preprocess is called
-    def _preprocess_nonadaptive(self, X, **kwargs):
+    def _preprocess_extra(self, X, **kwargs):
         # TODO: super() call?
         X = self.convert_pred_probas_df_to_list(X)
         return X
@@ -50,8 +50,12 @@ class GreedyWeightedEnsembleModel(AbstractModel):
     # TODO: Check memory after loading best model predictions, only load top X model predictions that fit in memory
     def _fit(self, X, y, X_val=None, y_val=None, time_limit=None, sample_weight=None, **kwargs):
         params = self._get_model_params()
+        if kwargs.get("clean_oof_predictions", False):
+            from autogluon.core.calibrate.stacked_overfitting_mitigation import clean_oof_predictions
+            stack_cols = list(X)
+            self._ir_map = clean_oof_predictions(X, y, X_val, y_val, stack_cols, self.problem_type, sample_weight=sample_weight)
         if self.model is None:
-            X = self.preprocess(X)
+            X = self.preprocess(X, is_train=True)
             self.model = self.model_base(problem_type=self.problem_type, quantile_levels=self.quantile_levels, metric=self.stopping_metric, **params)
             self.model = self.model.fit(X, y, time_limit=time_limit, sample_weight=sample_weight)
             self.base_model_names, self.model.weights_ = self.remove_zero_weight_models(self.base_model_names, self.model.weights_)

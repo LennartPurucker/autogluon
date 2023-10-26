@@ -31,9 +31,9 @@ def clean_oof_predictions(
     if problem_type != BINARY:
         raise ValueError(f"Unsupported Problem Type for cleaning oof predictions! Got: {problem_type}")
 
-    from autogluon.tabular.models import NNFastAiTabularModel, TabularNeuralNetTorchModel, LGBModel, \
-        CatBoostModel  # future LinearModel, TabPFNModel
-    is_smooth_fiter = (fold_model is None) or isinstance(fold_model, (NNFastAiTabularModel, TabularNeuralNetTorchModel))
+    # from autogluon.tabular.models import NNFastAiTabularModel, TabularNeuralNetTorchModel, LGBModel, \
+    #     CatBoostModel  # future LinearModel, TabPFNModel
+    # is_smooth_fiter = (fold_model is None) or isinstance(fold_model, (NNFastAiTabularModel, TabularNeuralNetTorchModel))
 
     if sample_weight is None:
         curr_sample_weight = np.ones((len(X),), dtype=np.float64)
