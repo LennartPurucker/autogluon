@@ -50,7 +50,7 @@ class GreedyWeightedEnsembleModel(AbstractModel):
     # TODO: Check memory after loading best model predictions, only load top X model predictions that fit in memory
     def _fit(self, X, y, X_val=None, y_val=None, time_limit=None, sample_weight=None, **kwargs):
         params = self._get_model_params()
-        if kwargs.get("clean_oof_predictions", False):
+        if False and kwargs.get("clean_oof_predictions", False):
             from autogluon.core.calibrate.stacked_overfitting_mitigation import clean_oof_predictions
             stack_cols = list(X)
             self._ir_map = clean_oof_predictions(X, y, X_val, y_val, stack_cols, self.problem_type, sample_weight=sample_weight)
