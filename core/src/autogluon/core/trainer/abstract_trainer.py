@@ -539,6 +539,8 @@ class AbstractTrainer:
                         tmp_dict[bm_name] = new_configs
 
                 models[l_d] = tmp_dict
+        if level > 1:
+            core_kwargs['path_to_reasonable_oof'] = self.path_to_reasonable_oof
 
         core_models = self.stack_new_level_core(
             X=X,
@@ -597,6 +599,24 @@ class AbstractTrainer:
                     **aux_kwargs,
                 )
             aux_models += add_aux_models
+
+        if level == 1:
+            if aux_models:
+                # TODO: Need to pick best (non-leaking) aux models if multiple exist
+                m = self.load_model(aux_models[-1])
+            else:
+                # TODO: Need to pick best core model if no aux model
+                m = self.load_model(core_models[-1])
+            m._load_oof()
+            s_p = os.path.join(self.path, "reasonable_oof.pkl")
+            save_pkl.save(
+                path=s_p,
+                object={
+                    "oof_pred_proba": m.get_oof_pred_proba(),
+                },
+            )
+            self.path_to_reasonable_oof = s_p
+
 
         return core_models, aux_models
 
@@ -2093,7 +2113,7 @@ class AbstractTrainer:
         Models trained from this method will be accessible in this Trainer.
         """
         model_fit_kwargs = self._get_model_fit_kwargs(
-            X=X, X_val=X_val, time_limit=time_limit, k_fold=k_fold, fit_kwargs=fit_kwargs, ens_sample_weight=kwargs.get("ens_sample_weight", None)
+            X=X, X_val=X_val, time_limit=time_limit, k_fold=k_fold, fit_kwargs=fit_kwargs, **kwargs,
         )
         if hyperparameter_tune_kwargs:
             if n_repeat_start != 0:
@@ -3539,13 +3559,16 @@ class AbstractTrainer:
         return distilled_model_names
 
     def _get_model_fit_kwargs(
-        self, X: pd.DataFrame, X_val: pd.DataFrame, time_limit: float, k_fold: int, fit_kwargs: dict, ens_sample_weight: List = None
+        self, X: pd.DataFrame, X_val: pd.DataFrame, time_limit: float, k_fold: int, fit_kwargs: dict, ens_sample_weight: List = None, **kwargs,
     ) -> dict:
         # Returns kwargs to be passed to AbstractModel's fit function
         if fit_kwargs is None:
             fit_kwargs = dict()
         clean_oof_predictions = self.clean_oof_predictions and not fit_kwargs.get("so_free_model", False)
-        model_fit_kwargs = dict(time_limit=time_limit, verbosity=self.verbosity, clean_oof_predictions=clean_oof_predictions, **fit_kwargs)
+        model_fit_kwargs = dict(time_limit=time_limit, verbosity=self.verbosity,
+                                clean_leaking_predictions=clean_oof_predictions, #old: clean_oof_predictions
+                                path_to_reasonable_oof=kwargs.get("path_to_reasonable_oof", None),
+                                **fit_kwargs)
         if self.sample_weight is not None:
             X, w_train = extract_column(X, self.sample_weight)
             if w_train is not None:  # may be None for ensemble

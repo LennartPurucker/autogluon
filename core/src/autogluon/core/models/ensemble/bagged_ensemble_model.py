@@ -99,6 +99,7 @@ class BaggedEnsembleModel(AbstractModel):
         self._child_oof = False  # Whether the OOF preds were taken from a single child model (Assumes child can produce OOF preds without bagging).
         self._cv_splitters = []  # Keeps track of the CV splitter used for each bagged repeat.
         self._params_aux_child = None  # aux params of child model
+        self._so_cleaner = None
 
         super().__init__(problem_type=self.model_base.problem_type, eval_metric=self.model_base.eval_metric, **kwargs)
 
@@ -419,6 +420,9 @@ class BaggedEnsembleModel(AbstractModel):
     def predict_proba(self, X, normalize=None, **kwargs):
         pred_proba = self._aggregate_bag_predictions(X, normalize=normalize, **kwargs)
 
+        if self._so_cleaner is not None:
+            pred_proba = self._so_cleaner.predict(pred_proba)
+
         if self.params_aux.get("temperature_scalar", None) is not None:
             pred_proba = self._apply_temperature_scaling(pred_proba)
         elif self.conformalize is not None:
@@ -550,6 +554,10 @@ class BaggedEnsembleModel(AbstractModel):
                     self._oof_pred_proba = model_base.predict_proba(X=X)
                 self._child_oof = True
                 model_base.predict_time = time.time() - time_start_predict
+                if kwargs.get("clean_leaking_predictions", False) and kwargs.get("path_to_reasonable_oof", False):
+                    from autogluon.core.calibrate.stacked_overfitting_mitigation import clean_leaking_predictions
+                    reasonable_oof = load_pkl.load(path=os.path.join(kwargs["path_to_reasonable_oof"]))["oof_pred_proba"]
+                    self._oof_pred_proba, self._so_cleaner = clean_leaking_predictions(self._oof_pred_proba, reasonable_oof, y)
                 model_base.val_score = model_base.score_with_y_pred_proba(y=y, y_pred_proba=self._oof_pred_proba)
             else:
                 can_get_oof_from_train = self._get_tags().get("can_get_oof_from_train", False)

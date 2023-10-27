@@ -159,7 +159,7 @@ class RFModel(AbstractModel):
         time_start = time.time()
 
         stack_cols = self.feature_metadata.get_features(required_special_types=["stack"])
-        clean_oof_predictions_needed = stack_cols and kwargs["clean_oof_predictions"]
+        clean_oof_predictions_needed = stack_cols and kwargs.get("clean_oof_predictions", False)
         model_cls = self._get_model_type(clean_oof_predictions_needed)
 
         max_memory_usage_ratio = self.params_aux["max_memory_usage_ratio"]

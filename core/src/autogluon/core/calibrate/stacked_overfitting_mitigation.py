@@ -71,6 +71,69 @@ def clean_oof_predictions(
 
     return ir_map
 
+
+def clean_leaking_predictions(
+        proba_to_clean,
+        reasonable_proba,
+        y
+        # sample_weight: Optional[np.ndarray] = None,
+) -> dict:
+    # Idea: Proba calibration at l2 informed from l1
+    #   - either L1 as target, or L1 as reg fit model
+    #   - motivation: ensure motonoc constraitns between L1 and L2+
+
+    # Problems / Variations:
+    #   - maybe it only works good if L1 model same model type as L2 model for reasonable proba
+    #       - could make that work and fall back if needed.
+    #   - maybe need to do it per repeat
+
+    # Test:
+    #  - different y
+    #  - different reg model fit on
+    reg = IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip") # , increasing=False
+    # reg = CenteredIsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip", increasing=True, non_centered_points=[0, 1])
+    # reg = _SigmoidCalibration()
+
+    # reg.fit(proba_b, y)
+    new_proba = proba_to_clean.copy()
+    new_proba[y==1] = reg.fit_transform(proba_to_clean[y==1], reasonable_proba[y==1])
+    plot_thresholds_proba(proba_to_clean[y==1], reasonable_proba[y==1],  reg)
+
+    new_proba[y==0] = reg.fit_transform(proba_to_clean[y==0], reasonable_proba[y==0])
+    plot_thresholds_proba(proba_to_clean[y==0], reasonable_proba[y==0],  reg)
+
+    reg.fit(proba_to_clean, reasonable_proba)
+    # reg.fit(proba_to_clean, y)
+
+    # reg.fit(np.hstack([proba_to_clean, proba_to_clean]), np.hstack([proba_b, y]),)
+
+
+    # new_proba = reg.predict(proba_to_clean)
+
+    return new_proba, reg
+
+def plot_thresholds_proba(proba_a, prob_b, reg):
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    ax.plot(proba_a, prob_b, "C0.", markersize=12)
+    # ax.plot(proba_a, reg.predict(proba_a), "C2.", markersize=12)
+    # ax.plot(reg.predict(proba_a), prob_b, "C3.", markersize=12)
+    x_th = None
+    # if hasattr(reg, "X_thresholds_"):
+    #     x_th, y_th = reg.X_thresholds_, reg.y_thresholds_
+
+    if x_th is not None:
+        ax.plot(x_th, y_th, "C1.-", markersize=12, alpha=0.5)
+
+    ax.plot([0, 1], [0, 1], "C8.-", markersize=12, alpha=0.5)
+    ax.set_xlim(-0.1, 1.1)
+
+    fig.supxlabel("Proba Clan")
+    fig.supylabel("Proba Ref")
+    plt.show()
+
 # def inject_offset(X, offset):
 #     return (X + offset).astype(np.float64)
 #

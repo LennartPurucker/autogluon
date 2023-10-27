@@ -360,7 +360,7 @@ def check_and_clean_oof(X_fold, y_fold, X_val_fold, y_val_fold, fold_model, kwar
     #   So predictions might not work correctly and apply the fix when needed (although I am not sure)
 
     stack_cols = kwargs_fold["feature_metadata"].get_features(required_special_types=["stack"])
-    if kwargs_fold["clean_oof_predictions"] and stack_cols:
+    if kwargs_fold.get("clean_oof_predictions", False) and stack_cols:
         # -- default
         ir_map = clean_oof_predictions(
             X_fold,
