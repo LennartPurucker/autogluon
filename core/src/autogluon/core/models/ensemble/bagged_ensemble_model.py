@@ -460,7 +460,58 @@ class BaggedEnsembleModel(AbstractModel):
         y_pred_proba = y_pred_proba / self.n_children
         return y_pred_proba
 
-    def _predict_proba(self, X, normalize=False, **kwargs) -> np.ndarray:
+    def parallel_remote_predict_proba(self, X, normalize=False, **kwargs):
+        import ray
+        X_ref = ray.put(self.preprocess(X, model=self.load_child(self.models[0]), **kwargs))
+        self_ref = ray.put(self)
+
+        remote_func = ray.remote(
+            num_cpus=self._params_aux_child.get("num_cpus", 1),
+            num_gpus=self._params_aux_child.get("num_gpus", 0),
+            max_calls=self.n_children, max_retries=0, retry_exceptions=False)(
+            _func_remote_pred_proba
+        )
+        unfinished = []
+        job_refs_map = {}
+        for job_index, model in enumerate(self.models):
+            result_ref = remote_func.remote(
+                _self=self_ref,
+                model_name=model,
+                X=X_ref,
+                normalize=normalize,
+            )
+            unfinished.append(result_ref)
+            job_refs_map[result_ref] = job_index
+            time.sleep(0.1)
+
+        # Memory overhead to be deterministic
+        pred_proba_list = []
+        while unfinished:
+            finished, unfinished = ray.wait(unfinished, num_returns=1)
+            pred_proba_list.append((job_refs_map[finished[0]], ray.get(finished[0])))
+
+        pred_proba_list = [r for _, r in sorted(pred_proba_list, key=lambda x: x[0])]
+        try:
+            pred_proba = np.sum(pred_proba_list, axis=0) / self.n_children
+        except Exception:
+            logger.warning("Bagged Model Parallel Predict failed, likely due to a Ray Buffer bug. Fixing it.")
+            pred_proba_list = [
+                r if isinstance(r, np.ndarray) else np.frombuffer(r[b"data"], dtype=r[b"type"]).reshape(r[b"shape"])
+                for r in pred_proba_list
+            ]
+            pred_proba = np.sum(pred_proba_list, axis=0) / self.n_children
+
+        ray.internal.free(object_refs=[self_ref, X_ref])
+        del self_ref, X_ref
+
+        if self.params_aux.get("temperature_scalar", None) is not None:
+            pred_proba = self._apply_temperature_scaling(pred_proba)
+        elif self.conformalize is not None:
+            pred_proba = self._apply_conformalization(pred_proba)
+
+        return pred_proba
+
+    def _predict_proba(self, X, normalize=False, **kwargs):
         return self.predict_proba(X=X, normalize=normalize, **kwargs)
 
     def score_with_oof(self, y, sample_weight=None):
@@ -485,6 +536,15 @@ class BaggedEnsembleModel(AbstractModel):
         # FIXME: This can lead to poor performance. Probably not bugged, but rather all pseudolabels can come from the same class...
         #  Consider pseudolabelling to respect the original distribution
         if is_pseudo:
+            if kwargs.get("sample_weight", None) is not None:
+                import warnings
+                warnings.warn("Sample weights given, but not used due to pseudo labelled data being given.",
+                              UserWarning, stacklevel=2)
+                bw = "balance_weight"
+                if (bw in X.columns) and (bw not in kwargs["feature_metadata"].get_features()):
+                    X = X.drop(columns=[bw])
+                kwargs.pop("sample_weight")
+
             # FIXME: Consider use_child_oof with pseudo labels! Need to keep track of indices
             logger.log(15, f"{len(X_pseudo)} extra rows of pseudolabeled data added to training set for {self.name}")
             assert_pseudo_column_match(X=X, X_pseudo=X_pseudo)
@@ -685,7 +745,7 @@ class BaggedEnsembleModel(AbstractModel):
         if issubclass(fold_fitting_strategy_cls, ParallelFoldFittingStrategy):
             fold_fitting_strategy_args["num_jobs"] = num_folds
             fold_fitting_strategy_args["num_folds_parallel"] = num_folds_parallel
-        if fold_fitting_strategy_cls == ParallelDistributedFoldFittingStrategy:
+        if (fold_fitting_strategy_cls == ParallelDistributedFoldFittingStrategy) and (not DistributedContext.is_shared_network_file_system()):
             fold_fitting_strategy_args["model_sync_path"] = DistributedContext.get_model_sync_path()
         fold_fitting_strategy: FoldFittingStrategy = fold_fitting_strategy_cls(**fold_fitting_strategy_args)
 
@@ -1337,7 +1397,7 @@ class BaggedEnsembleModel(AbstractModel):
         directory = self.path
         os.makedirs(directory, exist_ok=True)
         data_path = directory
-        if DistributedContext.is_distributed_mode():
+        if DistributedContext.is_distributed_mode() and (not DistributedContext.is_shared_network_file_system()):
             data_path = DistributedContext.get_util_path()
         train_path, val_path = hpo_executor.prepare_data(X=X, y=y, X_val=X_val, y_val=y_val, path_prefix=data_path)
 
@@ -1415,3 +1475,8 @@ class BaggedEnsembleModel(AbstractModel):
     def _get_tags_child(self):
         """Gets the tags of the child model."""
         return self._get_model_base()._get_tags()
+
+
+def _func_remote_pred_proba(*, _self, model_name, X, normalize) -> np.ndarray:
+    model = _self.load_child(model_name)
+    return model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)

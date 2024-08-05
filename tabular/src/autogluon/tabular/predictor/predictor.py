@@ -731,6 +731,14 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
                 Number of stacking levels to use in stack ensemble. Roughly increases model training time by factor of `num_stack_levels+1` (set = 0 to disable stack ensembling).
                 Disabled by default (0), but we recommend values between 1-3 to maximize predictive performance.
                 To prevent overfitting, `num_bag_folds >= 2` must also be set or else a ValueError will be raised.
+            force_full_repeated_cross_validation : bool, default = False
+                Controls how repeated cross-validation is performed in AutoGluon when under a time limit.
+                We suggest to stick to `force_full_repeated_cross_validation=False` unless you have a lot of CPU resources that can be used in parallel.
+                    If False, AutoGluon evaluates each repeat of cross-validation in sequence. That is, it first
+                        evaluates all models on the first repeat, then, if we still have time, all models on the second, and so on.
+                    If True, AutoGluon evaluates all repeats of cross-validation for one model, before evaluating the next model. This setting
+                        can also useful if you want to guarantee that a certain repeated cross-validation setting is full evaluated to avoid overfitting.
+                        But at the same time it hinders exploration of (more) different models.
             holdout_frac : float, default = None
                 Fraction of train_data to holdout as tuning data for optimizing hyperparameters (ignored unless `tuning_data = None`, ignored if `num_bag_folds != 0` unless `use_bag_holdout == True`).
                 Default value (if None) is selected based on the number of rows in the training data. Default values range from 0.2 at 2,500 rows to 0.01 at 250,000 rows.
@@ -1030,6 +1038,7 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
         excluded_model_types = kwargs["excluded_model_types"]
         use_bag_holdout = kwargs["use_bag_holdout"]
         ds_args: dict = kwargs["ds_args"]
+        force_full_repeated_cross_validation: bool = kwargs["force_full_repeated_cross_validation"]
 
         if ag_args is None:
             ag_args = {}
@@ -1135,6 +1144,7 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
             "included_model_types": included_model_types,
             "excluded_model_types": excluded_model_types,
             "feature_prune_kwargs": kwargs.get("feature_prune_kwargs", None),
+            "force_full_repeated_cross_validation": force_full_repeated_cross_validation
         }
         aux_kwargs = {}
         if fit_weighted_ensemble is False:
@@ -4648,6 +4658,7 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
             # other
             verbosity=self.verbosity,
             feature_prune_kwargs=None,
+            force_full_repeated_cross_validation=False,
             # private
             _save_bag_folds=None,
             calibrate="auto",
@@ -5169,7 +5180,8 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
             raise ValueError(f"'{name}' does not contain the labeled column.")
 
         if self.sample_weight is not None:
-            raise ValueError(f"Applying 'sample_weight' with {name} is not supported.")
+            warnings.warn(f"Applying 'sample_weight' with {name} is not supported. Setting it to None.", UserWarning, stacklevel=2)
+            self.sample_weight = None
 
         X_pseudo = pseudo_data.drop(columns=[self.label])
         y_pseudo_og = pseudo_data[self.label]

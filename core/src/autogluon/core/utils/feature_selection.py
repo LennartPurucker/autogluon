@@ -157,7 +157,7 @@ class FeatureSelector:
         y: pd.Series,
         X_val: pd.DataFrame = None,
         y_val: pd.Series = None,
-        n_train_subsample: int = 50000,
+        n_train_subsample: int | None = 50000,
         n_fi_subsample: int = 10000,
         prune_threshold: float = "noise",
         prune_ratio: float = 0.05,

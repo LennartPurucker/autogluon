@@ -4,13 +4,16 @@ import math
 import os
 import pickle
 import time
+import warnings
 from abc import abstractmethod
 from typing import Any, Dict, Optional, Tuple, Union
+import numpy as np
 
 import pandas as pd
 from numpy import ndarray
 from pandas import DataFrame, Series
 
+from autogluon.common.utils.distribute_utils import DistributedContext
 from autogluon.common.utils.lite import disable_if_lite_mode
 from autogluon.common.utils.pandas_utils import get_approximate_df_mem_usage
 from autogluon.common.utils.resource_utils import ResourceManager
@@ -327,12 +330,14 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
         kwargs_fold = kwargs.copy()
         is_pseudo = self.X_pseudo is not None and self.y_pseudo is not None
         if self.sample_weight is not None:
-            kwargs_fold["sample_weight"] = self.sample_weight[train_index]
-            kwargs_fold["sample_weight_val"] = self.sample_weight[val_index]
-
             if is_pseudo:
                 # TODO: Add support for sample_weight when pseudo is present
-                raise Exception("Sample weights given, but not used due to pseudo labelled data being given.")
+                warnings.warn("Sample weights given, but not used due to pseudo labelled data being given.",
+                              UserWarning, stacklevel=2)
+                bw = "balance_weight"
+                if (bw in X_fold.columns) and (bw not in kwargs["feature_metadata"].get_features()):
+                    X_fold = X_fold.drop(columns=[bw])
+                    X_val_fold = X_val_fold.drop(columns=[bw])
             else:
                 kwargs_fold["sample_weight"] = self.sample_weight[train_index]
                 kwargs_fold["sample_weight_val"] = self.sample_weight[val_index]
@@ -394,6 +399,14 @@ def _ray_fit(
                 X_pseudo = pickle.load(X_pseudo_f)
                 y_pseudo = pickle.load(y_pseudo_f)
         is_pseudo = True
+
+    train_index = train_index if isinstance(train_index, np.ndarray) else np.frombuffer(train_index[b"data"], dtype=train_index[b"type"]).reshape(train_index[b"shape"])
+    val_index = val_index if isinstance(val_index, np.ndarray) else np.frombuffer(val_index[b"data"], dtype=val_index[b"type"]).reshape(val_index[b"shape"])
+
+    for sw_name in ["sample_weight", "sample_weight_val"]:
+        if sw_name in kwargs_fold:
+            kwargs_fold[sw_name] = kwargs_fold[sw_name] if isinstance(kwargs_fold[sw_name], np.ndarray) \
+                else np.frombuffer(kwargs_fold[sw_name][b"data"], dtype=kwargs_fold[sw_name][b"type"]).reshape(kwargs_fold[sw_name][b"shape"])
 
     X_fold, X_val_fold = X.iloc[train_index, :], X.iloc[val_index, :]
     y_fold, y_val_fold = y.iloc[train_index], y.iloc[val_index]
@@ -699,8 +712,12 @@ class ParallelFoldFittingStrategy(FoldFittingStrategy):
         is_pseudo = X_pseudo_ref is not None and y_pseudo_ref is not None
         if self.sample_weight is not None:
             if is_pseudo:
-                # TODO: Add support for sample_weight when pseudo is present
-                raise Exception("Sample weights given, but not used due to pseudo labelled data being given.")
+                warnings.warn("Sample weights given, but not used due to pseudo labelled data being given.", UserWarning, stacklevel=2)
+                bw = "balance_weight"
+                X = self.ray.get(X_ref)
+                if (bw in X.columns) and (bw not in kwargs["feature_metadata"].get_features()):
+                    X_ref = self.ray.put(X.drop(columns=[bw]))
+                del X
             else:
                 kwargs_fold["sample_weight"] = self.sample_weight[train_index]
                 kwargs_fold["sample_weight_val"] = self.sample_weight[val_index]
@@ -912,9 +929,15 @@ class ParallelLocalFoldFittingStrategy(ParallelFoldFittingStrategy):
 class ParallelDistributedFoldFittingStrategy(ParallelFoldFittingStrategy):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Append bag model name in the path
-        self.model_sync_path = self.model_sync_path + os.path.basename(os.path.normpath(self.bagged_ensemble_model.path)) + "/"
+
+        # Append bag model name in the path, only use when sync path is required.
+        if not DistributedContext.is_shared_network_file_system():
+            self.model_sync_path = self.model_sync_path + os.path.basename(os.path.normpath(self.bagged_ensemble_model.path)) + "/"
 
     def _sync_model_artifact(self, local_path, model_sync_path):
+        if DistributedContext.is_shared_network_file_system():
+            # Not need to sync model artifacts in a shared file system.
+            return
+
         bucket, path = s3_path_to_bucket_prefix(model_sync_path)
         download_s3_folder(bucket=bucket, prefix=path, local_path=local_path, error_if_exists=False, verbose=False)

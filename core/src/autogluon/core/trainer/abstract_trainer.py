@@ -20,7 +20,7 @@ from autogluon.common.features.types import R_FLOAT, S_STACK
 from autogluon.common.utils.lite import disable_if_lite_mode
 from autogluon.common.utils.log_utils import convert_time_in_s_to_log_friendly
 from autogluon.common.utils.path_converter import PathConverter
-from autogluon.common.utils.resource_utils import ResourceManager
+from autogluon.common.utils.resource_utils import ResourceManager, get_resource_manager
 from autogluon.common.utils.try_import import try_import_torch
 
 from ..augmentation.distill_utils import augment_data, format_distillation_labels
@@ -1082,78 +1082,176 @@ class AbstractTrainer:
         cascade_order: List[str] = []
 
         # Compute model predictions in topological order
-        for model_name in model_pred_order:
-            if record_pred_time:
-                time_start = time.time()
+        # TODO: likely need to change this
+        parallel_predict = os.environ.get("AG_DISTRIBUTED_PREDICT_MODELS_PARALLEL", "False") == "True"
 
-            if cascade:
-                # Keep track of the iloc index of the current model for the rows that are predicted on.
-                #  iloc is used because it is a very compute efficient way to track the location of rows.
-                iloc_model_dict[model_name] = unconfident_idx
-            model = self.load_model(model_name=model_name)
-            if isinstance(model, StackerEnsembleModel):
+        if not parallel_predict:
+            for model_name in model_pred_order:
+                if record_pred_time:
+                    time_start = time.time()
+
                 if cascade:
-                    # Need to predict only on the unconfident rows that remain.
-                    #  This requires getting the correct indices from the dependent models' prior predictions.
-                    #  Because the length of predictions in prior models differs due to early exiting,
-                    #  this logic fetches the correct indices via the iloc_model_dict.
-                    cascade_dict = dict()
-                    for m in model_pred_proba_dict_cascade:
-                        # TODO: Can probably be done faster, unsure how expensive this is.
-                        cascade_dict[m] = model_pred_proba_dict_cascade[m][iloc_model_dict[model_name]]
-                    preprocess_kwargs = dict(infer=False, model_pred_proba_dict=cascade_dict)
+                    # Keep track of the iloc index of the current model for the rows that are predicted on.
+                    #  iloc is used because it is a very compute efficient way to track the location of rows.
+                    iloc_model_dict[model_name] = unconfident_idx
+                model = self.load_model(model_name=model_name)
+                if isinstance(model, StackerEnsembleModel):
+                    if cascade:
+                        # Need to predict only on the unconfident rows that remain.
+                        #  This requires getting the correct indices from the dependent models' prior predictions.
+                        #  Because the length of predictions in prior models differs due to early exiting,
+                        #  this logic fetches the correct indices via the iloc_model_dict.
+                        cascade_dict = dict()
+                        for m in model_pred_proba_dict_cascade:
+                            # TODO: Can probably be done faster, unsure how expensive this is.
+                            cascade_dict[m] = model_pred_proba_dict_cascade[m][iloc_model_dict[model_name]]
+                        preprocess_kwargs = dict(infer=False, model_pred_proba_dict=cascade_dict)
+                    else:
+                        preprocess_kwargs = dict(infer=False, model_pred_proba_dict=model_pred_proba_dict)
+                    model_pred_proba_dict[model_name] = model.predict_proba(X, **preprocess_kwargs)
                 else:
-                    preprocess_kwargs = dict(infer=False, model_pred_proba_dict=model_pred_proba_dict)
-                model_pred_proba_dict[model_name] = model.predict_proba(X, **preprocess_kwargs)
-            else:
-                model_pred_proba_dict[model_name] = model.predict_proba(X)
+                    model_pred_proba_dict[model_name] = model.predict_proba(X)
 
-            if record_pred_time:
-                time_end = time.time()
-                model_pred_time_dict[model_name] = time_end - time_start
+                if record_pred_time:
+                    time_end = time.time()
+                    model_pred_time_dict[model_name] = time_end - time_start
+
+                if cascade:
+                    if model_name in models:
+                        cascade_order.append(model_name)
+                    if self.problem_type == BINARY:
+                        tmp = np.zeros(num_rows, dtype="float32")
+                    else:
+                        tmp = np.zeros((num_rows, self.num_classes), dtype="float32")
+                    tmp[iloc_model_dict[model_name]] = model_pred_proba_dict[model_name]
+                    model_pred_proba_dict_cascade[model_name] = tmp
+                    # If model is part of cascade, keep the predictions that are confident and don't predict on these rows with further models.
+                    if model_name in models and model_name != models[-1]:
+                        pred_proba = model_pred_proba_dict[model_name]
+                        # Calculate confident predictions based on cascade threshold
+                        # TODO: Support more sophisticated methods of calculating whether to keep a prediction
+                        # TODO: Support per-model confidence specification
+                        if self.problem_type == BINARY:
+                            confident = (pred_proba >= cascade_threshold) | (pred_proba <= (1 - cascade_threshold))
+                        elif self.problem_type == MULTICLASS:
+                            confident = (pred_proba >= cascade_threshold).any(axis=1)
+                        else:
+                            raise AssertionError(f"Invalid cascade problem_type: {self.problem_type}")
+                        unconfident_cur = ~confident
+                        # Shrink X to only contain the remaining unconfident rows
+                        X = X.iloc[unconfident_cur]
+                        unconfident_idx = unconfident_idx[unconfident_cur]
+                        # If no rows remain that are unconfident, exit cascade logic early.
+                        if len(X) == 0:
+                            break
 
             if cascade:
-                if model_name in models:
-                    cascade_order.append(model_name)
+                # TODO: How should this be output?
                 if self.problem_type == BINARY:
-                    tmp = np.zeros(num_rows, dtype="float32")
+                    cascade_pred_proba = np.zeros(num_rows, dtype="float32")
                 else:
-                    tmp = np.zeros((num_rows, self.num_classes), dtype="float32")
-                tmp[iloc_model_dict[model_name]] = model_pred_proba_dict[model_name]
-                model_pred_proba_dict_cascade[model_name] = tmp
-                # If model is part of cascade, keep the predictions that are confident and don't predict on these rows with further models.
-                if model_name in models and model_name != models[-1]:
-                    pred_proba = model_pred_proba_dict[model_name]
-                    # Calculate confident predictions based on cascade threshold
-                    # TODO: Support more sophisticated methods of calculating whether to keep a prediction
-                    # TODO: Support per-model confidence specification
-                    if self.problem_type == BINARY:
-                        confident = (pred_proba >= cascade_threshold) | (pred_proba <= (1 - cascade_threshold))
-                    elif self.problem_type == MULTICLASS:
-                        confident = (pred_proba >= cascade_threshold).any(axis=1)
-                    else:
-                        raise AssertionError(f"Invalid cascade problem_type: {self.problem_type}")
-                    unconfident_cur = ~confident
-                    # Shrink X to only contain the remaining unconfident rows
-                    X = X.iloc[unconfident_cur]
-                    unconfident_idx = unconfident_idx[unconfident_cur]
-                    # If no rows remain that are unconfident, exit cascade logic early.
-                    if len(X) == 0:
-                        break
+                    cascade_pred_proba = np.zeros((num_rows, self.num_classes), dtype="float32")
+                # For each model in the cascade early exit logic from first to final, update cascade_pred_proba
+                #  with the pred_proba from that model of the rows it predicted on.
+                #  This will result in the final pred_proba of the cascade at the end of the for-loop.
+                for m in cascade_order:
+                    cascade_pred_proba[iloc_model_dict[m]] = model_pred_proba_dict[m]
+                # FIXME: Temp overwrite, unsure how we want to vend cascade results? In future maybe under its own model name.
+                model_pred_proba_dict[models[-1]] = cascade_pred_proba
+        else:
+            if cascade:
+                raise NotImplementedError("Cascade is not yet implemented for parallel predict.")
 
-        if cascade:
-            # TODO: How should this be output?
-            if self.problem_type == BINARY:
-                cascade_pred_proba = np.zeros(num_rows, dtype="float32")
-            else:
-                cascade_pred_proba = np.zeros((num_rows, self.num_classes), dtype="float32")
-            # For each model in the cascade early exit logic from first to final, update cascade_pred_proba
-            #  with the pred_proba from that model of the rows it predicted on.
-            #  This will result in the final pred_proba of the cascade at the end of the for-loop.
-            for m in cascade_order:
-                cascade_pred_proba[iloc_model_dict[m]] = model_pred_proba_dict[m]
-            # FIXME: Temp overwrite, unsure how we want to vend cascade results? In future maybe under its own model name.
-            model_pred_proba_dict[models[-1]] = cascade_pred_proba
+            # -- Init info
+            import ray
+
+            # --- Get Batches
+            model_batches = {}
+            for model in model_pred_order:
+                min_models_set = self.get_minimum_model_set(model)
+                min_models_set.remove(model)
+                min_models_set = set(min_models_set)
+                model_batches[model] = hash("".join(min_models_set))
+
+            batch_hash_order = []
+            for i in [model_batches[m] for m in model_pred_order]:
+                if i in batch_hash_order:
+                    continue
+                batch_hash_order.append(i)
+
+            batches = []
+            for batch_hash in batch_hash_order:
+                batch = []
+                for model, model_batch_hash in model_batches.items():
+                    if model_batch_hash == batch_hash:
+                        batch.append(model)
+                batches.append(batch)
+
+            # -- Parallel Predict
+            remote_func = ray.remote(max_calls=10, max_retries=0, retry_exceptions=False)(_remote_predict)
+            self_ref = ray.put(self)
+            X_ref = ray.put(X)
+
+            def get_remote_options(_model):
+                _as_not_bagged = (self.get_model_attribute(model=_model, attribute="refit_full_requires_gpu")
+                                  or (self.get_model_attribute(model=_model, attribute="num_children") == 1))
+                _num_gpus = self.get_model_attribute(model=_model, attribute="fit_num_gpu") if _as_not_bagged else 0
+                # TODO: rework usage of this env variable
+                _num_cpus = self.get_model_attribute(model=_model, attribute="fit_num_cpu") if _as_not_bagged else int(os.environ.get("AG_DISTRIBUTED_RAY_WORKER_N_CPUS", 1))
+                return _as_not_bagged, _num_gpus, _num_cpus
+
+            ag_ray_workers = int(os.environ.get("AG_DISTRIBUTED_N_RAY_WORKERS_PREDICT", 1))
+            logger.info(f"Distributed Predict with {ag_ray_workers} workers at most.")
+
+            for model_batch in batches:
+                job_refs = []
+                model_pred_proba_dict_ref = ray.put(model_pred_proba_dict)
+
+                for model in model_batch[:ag_ray_workers]:
+                    as_not_bagged, num_gpus, num_cpus = get_remote_options(model)
+                    result_ref = remote_func.options(num_cpus=num_cpus, num_gpus=num_gpus).remote(
+                        _self=self_ref,
+                        model_name=model,
+                        X=X_ref,
+                        model_pred_proba_dict=model_pred_proba_dict_ref,
+                        record_pred_time=record_pred_time,
+                        as_not_bagged=as_not_bagged,
+                    )
+                    logger.log(20, f"Scheduled predicting with model for {model}\n\t{result_ref}")
+                    job_refs.append(result_ref)
+                    time.sleep(0.1)
+
+                unfinished_models = model_batch[ag_ray_workers:]
+                unfinished = job_refs
+                while unfinished:
+                    finished, unfinished = ray.wait(unfinished, num_returns=1)
+                    model_name, result = ray.get(finished[0])
+                    logger.log(20, f"Finished predicting with model for {model_name} | #Running: {len(unfinished)}")
+
+                    if record_pred_time:
+                        model_pred_proba_dict[model_name], model_pred_time_dict[model_name] = result
+                    else:
+                        model_pred_proba_dict[model_name] = result
+
+                    # Re-schedule workers
+                    while (len(unfinished) < ag_ray_workers) and unfinished_models:
+                        as_not_bagged, num_gpus, num_cpus = get_remote_options(unfinished_models[0])
+                        result_ref = remote_func.options(num_cpus=num_cpus,num_gpus=num_gpus).remote(
+                            _self=self_ref,
+                            model_name=unfinished_models[0],
+                            X=X_ref,
+                            model_pred_proba_dict=model_pred_proba_dict_ref,
+                            record_pred_time=record_pred_time,
+                            as_not_bagged=as_not_bagged,
+                        )
+                        unfinished.append(result_ref)
+                        logger.log(20, f"Scheduled predicting with model for {unfinished_models[0]}\n\t{result_ref}")
+                        unfinished_models = unfinished_models[1:]
+
+            if batches:
+                # Clean up ray
+                ray.internal.free(object_refs=[self_ref, X_ref, model_pred_proba_dict_ref])
+                del self_ref, X_ref, model_pred_proba_dict_ref
 
         if record_pred_time:
             return model_pred_proba_dict, model_pred_time_dict
@@ -1387,84 +1485,159 @@ class AbstractTrainer:
         levels = sorted(model_levels.keys())
         models_trained_full = []
         model_refit_map = {}
+
+        fit_models_parallel = os.environ.get("AG_DISTRIBUTED_FIT_MODELS_PARALLEL", "False") == "True"
+
         for level in levels:
             models_level = model_levels[level]
-            for model in models_level:
-                model = self.load_model(model)
-                model_name = model.name
-                reuse_first_fold = False
-                if isinstance(model, BaggedEnsembleModel):
-                    # Reuse if model is already _FULL and no X_val
-                    if X_val is None:
-                        reuse_first_fold = not model._bagged_mode
-                if not reuse_first_fold:
-                    if isinstance(model, BaggedEnsembleModel):
-                        can_refit_full = model._get_tags_child().get("can_refit_full", False)
-                    else:
-                        can_refit_full = model._get_tags().get("can_refit_full", False)
-                    reuse_first_fold = not can_refit_full
-                if not reuse_first_fold:
-                    model_full = model.convert_to_refit_full_template()
-                    # Mitigates situation where bagged models barely had enough memory and refit requires more. Worst case results in OOM, but this lowers chance of failure.
-                    model_full._user_params_aux["max_memory_usage_ratio"] = model.params_aux["max_memory_usage_ratio"] * 1.15
-                    # TODO: Do it for all models in the level at once to avoid repeated processing of data?
-                    base_model_names = self.get_base_model_names(model_name)
-                    # FIXME: Logs for inference speed (1 row) are incorrect because
-                    #  parents are non-refit models in this sequence and later correct after logging.
-                    #  Avoiding fix at present to minimize hacks in the code.
-                    #  Return to this later when Trainer controls all stacking logic to map correct parent.
-                    models_trained = self.stack_new_level_core(
-                        X=X,
-                        y=y,
-                        X_val=X_val,
-                        y_val=y_val,
-                        X_unlabeled=X_unlabeled,
-                        models=[model_full],
-                        base_model_names=base_model_names,
-                        level=level,
-                        stack_name=REFIT_FULL_NAME,
-                        hyperparameter_tune_kwargs=None,
-                        feature_prune=False,
-                        k_fold=0,
-                        n_repeats=1,
-                        ensemble_type=type(model),
-                        refit_full=True,
-                        **kwargs,
-                    )
-                    if len(models_trained) == 0:
-                        reuse_first_fold = True
-                        logger.log(
-                            30,
-                            f"WARNING: Refit training failure detected for '{model_name}'... "
-                            f"Falling back to using first fold to avoid downstream exception."
-                            f"\n\tThis is likely due to an out-of-memory error or other memory related issue. "
-                            f"\n\tPlease create a GitHub issue if this was triggered from a non-memory related problem.",
-                        )
-                        if not model.params.get("save_bag_folds", True):
-                            raise AssertionError(
-                                f"Cannot avoid training failure during refit for '{model_name}' by falling back to "
-                                f"copying the first fold because it does not exist! (save_bag_folds=False)"
-                                f"\n\tPlease specify `save_bag_folds=True` in the `.fit` call to avoid this exception."
-                            )
 
-                if reuse_first_fold:
-                    # Perform fallback black-box refit logic that doesn't retrain.
-                    model_full = model.convert_to_refit_full_via_copy()
-                    # FIXME: validation time not correct for infer 1 batch time, needed to hack _is_refit=True to fix
-                    logger.log(20, f"Fitting model: {model_full.name} | Skipping fit via cloning parent ...")
-                    self._add_model(model_full, stack_name=REFIT_FULL_NAME, level=level, _is_refit=True)
-                    self.save_model(model_full)
-                    models_trained = [model_full.name]
-                if len(models_trained) == 1:
-                    model_refit_map[model_name] = models_trained[0]
-                for model_trained in models_trained:
-                    self._update_model_attr(
-                        model_trained,
-                        refit_full=True,
-                        refit_full_parent=model_name,
-                        refit_full_parent_val_score=self.get_model_attribute(model_name, "val_score"),
+
+
+            if not fit_models_parallel:
+                for model in models_level:
+                    model = self.load_model(model)
+                    model_name = model.name
+                    reuse_first_fold = False
+                    if isinstance(model, BaggedEnsembleModel):
+                        # Reuse if model is already _FULL and no X_val
+                        if X_val is None:
+                            reuse_first_fold = not model._bagged_mode
+                    if not reuse_first_fold:
+                        if isinstance(model, BaggedEnsembleModel):
+                            can_refit_full = model._get_tags_child().get("can_refit_full", False)
+                        else:
+                            can_refit_full = model._get_tags().get("can_refit_full", False)
+                        reuse_first_fold = not can_refit_full
+                    if not reuse_first_fold:
+                        model_full = model.convert_to_refit_full_template()
+                        # Mitigates situation where bagged models barely had enough memory and refit requires more. Worst case results in OOM, but this lowers chance of failure.
+                        model_full._user_params_aux["max_memory_usage_ratio"] = model.params_aux["max_memory_usage_ratio"] * 1.15
+                        # TODO: Do it for all models in the level at once to avoid repeated processing of data?
+                        base_model_names = self.get_base_model_names(model_name)
+                        # FIXME: Logs for inference speed (1 row) are incorrect because
+                        #  parents are non-refit models in this sequence and later correct after logging.
+                        #  Avoiding fix at present to minimize hacks in the code.
+                        #  Return to this later when Trainer controls all stacking logic to map correct parent.
+                        models_trained = self.stack_new_level_core(
+                            X=X,
+                            y=y,
+                            X_val=X_val,
+                            y_val=y_val,
+                            X_unlabeled=X_unlabeled,
+                            models=[model_full],
+                            base_model_names=base_model_names,
+                            level=level,
+                            stack_name=REFIT_FULL_NAME,
+                            hyperparameter_tune_kwargs=None,
+                            feature_prune=False,
+                            k_fold=0,
+                            n_repeats=1,
+                            ensemble_type=type(model),
+                            refit_full=True,
+                            **kwargs,
+                        )
+                        if len(models_trained) == 0:
+                            reuse_first_fold = True
+                            logger.log(
+                                30,
+                                f"WARNING: Refit training failure detected for '{model_name}'... "
+                                f"Falling back to using first fold to avoid downstream exception."
+                                f"\n\tThis is likely due to an out-of-memory error or other memory related issue. "
+                                f"\n\tPlease create a GitHub issue if this was triggered from a non-memory related problem.",
+                            )
+                            if not model.params.get("save_bag_folds", True):
+                                raise AssertionError(
+                                    f"Cannot avoid training failure during refit for '{model_name}' by falling back to "
+                                    f"copying the first fold because it does not exist! (save_bag_folds=False)"
+                                    f"\n\tPlease specify `save_bag_folds=True` in the `.fit` call to avoid this exception."
+                                )
+
+                    if reuse_first_fold:
+                        # Perform fallback black-box refit logic that doesn't retrain.
+                        model_full = model.convert_to_refit_full_via_copy()
+                        # FIXME: validation time not correct for infer 1 batch time, needed to hack _is_refit=True to fix
+                        logger.log(20, f"Fitting model: {model_full.name} | Skipping fit via cloning parent ...")
+                        self._add_model(model_full, stack_name=REFIT_FULL_NAME, level=level, _is_refit=True)
+                        self.save_model(model_full)
+                        models_trained = [model_full.name]
+
+                    if len(models_trained) == 1:
+                        model_refit_map[model_name] = models_trained[0]
+                    for model_trained in models_trained:
+                        self._update_model_attr(
+                            model_trained,
+                            refit_full=True,
+                            refit_full_parent=model_name,
+                            refit_full_parent_val_score=self.get_model_attribute(model_name, "val_score"),
+                        )
+                    models_trained_full += models_trained
+            else:
+                # TODO: remove duplicated code and switch to handler.
+                import ray
+                ag_ray_workers=min(int(os.environ.get("AG_DISTRIBUTED_N_RAY_WORKERS",1)),len(models_level))
+
+                # -- Parallel Refit
+                remote_func=ray.remote(num_cpus=1,max_calls=8,max_retries=0,retry_exceptions=False)(_remote_refit)
+                self_ref=ray.put(self)
+                X_ref = ray.put(X)
+                y_ref = ray.put(y)
+                X_val_ref = ray.put(X_val)
+                y_val_ref = ray.put(y_val)
+                X_unlabeled_ref = ray.put(X_unlabeled)
+                kwargs_ref = ray.put(kwargs)
+                job_refs = []
+
+                def num_gpus_for_model(_model_name) -> int:
+                    return 1 if self.get_model_attribute(model=_model_name, attribute="refit_full_requires_gpu") else 0
+
+                for model in models_level[:ag_ray_workers]:
+                    # TODO: do I need GPU here?
+                    result_ref=remote_func.options(num_gpus=num_gpus_for_model(model)).remote(
+                        _self=self_ref,
+                        original_model_name=model,
+                        level=level,
+                        X=X_ref,
+                        y=y_ref,
+                        X_val=X_val_ref,
+                        y_val=y_val_ref,
+                        X_unlabeled=X_unlabeled_ref,
+                        kwargs=kwargs_ref,
                     )
-                models_trained_full += models_trained
+                    logger.log(20,f"Scheduled refit for model {model}\n\t{result_ref}")
+                    job_refs.append(result_ref)
+
+                unfinished_models=models_level[ag_ray_workers:]
+                unfinished=job_refs
+                while unfinished:
+                    finished,unfinished=ray.wait(unfinished,num_returns=1)
+                    refit_full_parent, model_name, model_path, model_type,  reuse_first_fold =ray.get(finished[0])
+                    self._add_model(model_type.load(path=os.path.join(self.path,model_path),reset_paths=self.reset_paths),stack_name=REFIT_FULL_NAME,
+                        level=level, force_del_model=False,_is_refit=True)
+                    model_refit_map[model_name]=model_name
+                    self._update_model_attr(model_name,refit_full=True,refit_full_parent=refit_full_parent,
+                            refit_full_parent_val_score=self.get_model_attribute(refit_full_parent,"val_score"),)
+                    logger.log(20,f"Finished refit model for {model_name}")
+
+                    # Re-schedule workers
+                    while (len(unfinished)<ag_ray_workers) and unfinished_models:
+                        result_ref=remote_func.options(num_gpus=num_gpus_for_model(unfinished_models[0])).remote(
+                            _self=self_ref,
+                            original_model_name=unfinished_models[0],
+                            level=level,
+                            X=X_ref,
+                            y=y_ref,
+                            X_val=X_val_ref,
+                            y_val=y_val_ref,
+                            X_unlabeled=X_unlabeled_ref,
+                            kwargs=kwargs_ref,
+                        )
+                        logger.log(20,f"Scheduled refit for model {unfinished_models[0]}\n\t{result_ref}")
+                        unfinished.append(result_ref)
+                        unfinished_models=unfinished_models[1:]
+
+                # Clean up ray
+                ray.internal.free(object_refs=[self_ref,X_ref, y_ref, X_val_ref, y_val_ref,X_unlabeled_ref,kwargs_ref])
+                del self_ref,X_ref, y_ref, X_val_ref, y_val_ref,X_unlabeled_ref,kwargs_ref
 
         keys_to_del = []
         for model in model_refit_map.keys():
@@ -2041,6 +2214,7 @@ class AbstractTrainer:
         predict_1_child_time = model.predict_1_time / num_children if model.predict_1_time is not None else None
         fit_metadata = model.get_fit_metadata()
 
+        model_param_aux = getattr(model, "_params_aux_child", model.params_aux)
         model_metadata = dict(
             fit_time=model.fit_time,
             compile_time=model.compile_time,
@@ -2062,11 +2236,14 @@ class AbstractTrainer:
             stack_name=stack_name,
             level=level,
             num_children=num_children,
+            fit_num_cpu=model_param_aux.get("num_cpus", 1),
+            fit_num_gpu=model_param_aux.get("num_gpus", 0),
+            refit_full_requires_gpu=(model_param_aux.get("num_gpus", 0) > 0) and model._user_params.get("refit_folds", False),
             **fit_metadata,
         )
         return model_metadata
 
-    def _add_model(self, model: AbstractModel, stack_name: str = "core", level: int = 1, y_pred_proba_val=None, _is_refit=False) -> bool:
+    def _add_model(self, model: AbstractModel, stack_name: str = "core", level: int = 1, y_pred_proba_val=None, _is_refit=False, force_del_model=False) -> bool:
         """
         Registers the fit model in the Trainer object. Stores information such as model performance, save path, model type, and more.
         To use a model in Trainer, self._add_model must be called.
@@ -2119,7 +2296,7 @@ class AbstractTrainer:
                     )
                 self.model_graph.add_edge(base_model_name, model.name)
         self._log_model_stats(model, _is_refit=_is_refit)
-        if self.low_memory:
+        if self.low_memory or force_del_model:
             del model
         return True
 
@@ -2531,32 +2708,194 @@ class AbstractTrainer:
             time_limit_model_split = time_limit / len(models)
         else:
             time_limit_model_split = time_limit
-        for i, model in enumerate(models):
-            if isinstance(model, str):
-                model = self.load_model(model)
-            elif self.low_memory:
-                model = copy.deepcopy(model)
-            if hyperparameter_tune_kwargs is not None and isinstance(hyperparameter_tune_kwargs, dict):
-                hyperparameter_tune_kwargs_model = hyperparameter_tune_kwargs.get(model.name, None)
-            else:
-                hyperparameter_tune_kwargs_model = None
-            # TODO: Only update scores when finished, only update model as part of final models if finished!
-            if time_split:
-                time_left = time_limit_model_split
-            else:
-                if time_limit is None:
-                    time_left = None
+
+        fit_models_parallel = os.environ.get("AG_DISTRIBUTED_FIT_MODELS_PARALLEL", "False") == "True"
+        if kwargs["stack_name"] != "core":
+            fit_models_parallel = False
+        if os.environ.get("TMP_DISABLED_AG_DISTRIBUTED_FIT_MODELS_PARALLEL", "False") == "True":
+            fit_models_parallel = False
+
+        if not fit_models_parallel:
+            for i, model in enumerate(models):
+                if isinstance(model, str):
+                    model = self.load_model(model)
+                elif self.low_memory:
+                    model = copy.deepcopy(model)
+                if hyperparameter_tune_kwargs is not None and isinstance(hyperparameter_tune_kwargs, dict):
+                    hyperparameter_tune_kwargs_model = hyperparameter_tune_kwargs.get(model.name, None)
                 else:
-                    time_start_model = time.time()
-                    time_left = time_limit - (time_start_model - time_start)
-            model_name_trained_lst = self._train_single_full(
-                X, y, model, time_limit=time_left, hyperparameter_tune_kwargs=hyperparameter_tune_kwargs_model, **kwargs
+                    hyperparameter_tune_kwargs_model = None
+                # TODO: Only update scores when finished, only update model as part of final models if finished!
+                if time_split:
+                    time_left = time_limit_model_split
+                else:
+                    if time_limit is None:
+                        time_left = None
+                    else:
+                        time_start_model = time.time()
+                        time_left = time_limit - (time_start_model - time_start)
+                model_name_trained_lst = self._train_single_full(
+                    X, y, model, time_limit=time_left, hyperparameter_tune_kwargs=hyperparameter_tune_kwargs_model,
+                    **kwargs)
+                if self.low_memory:
+                    del model
+                models_valid += model_name_trained_lst
+            return models_valid
+
+        import ray
+
+        remote_p = ray.remote(max_calls=8, max_retries=0, retry_exceptions=False)(_remote_train_multi_fold)
+        ag_ray_workers = min(int(os.environ.get("AG_DISTRIBUTED_N_RAY_WORKERS", 1)), len(models))
+        self_ref = ray.put(self)
+        X_ref = ray.put(X)
+        y_ref = ray.put(y)
+        kwargs_ref = ray.put(kwargs)
+        hyperparameter_tune_kwargs_ref = ray.put(hyperparameter_tune_kwargs)
+        job_refs = []
+
+        def num_gpus_for_model(_model) -> int:
+            model_gpus_per_fit = getattr(_model, "model_base", _model)._user_params_aux.get("num_gpus", 0)
+            return model_gpus_per_fit if ((model_gpus_per_fit > 0) and _model._user_params.get("refit_folds", False)) else 0
+
+        # Start initial jobs
+        logger.log(20, f"Scheduling work for {ag_ray_workers} many workers...")
+        total_num_cpus = kwargs.get("total_resources", {}).get("num_cpus", 1)
+        total_num_gpus = kwargs.get("total_resources", {}).get("num_gpus", 0)
+
+        # fix "auto" case
+        if isinstance(total_num_cpus, str):
+            total_num_cpus = get_resource_manager().get_cpu_count()
+        if isinstance(total_num_gpus, str):
+            total_num_gpus = get_resource_manager().get_gpu_count()
+
+        org_total_num_cpus = total_num_cpus
+        n_splits = kwargs.get("k_fold", 1) * kwargs.get("n_repeats", 1)  # TODO: what happens in HO case?
+        job_ref_to_resources = {}
+        rest_models = []
+        for model_i in range(len(models)):
+            model = models[model_i]
+            num_gpu_for_fitter = num_gpus_for_model(model)
+            model_needs_num_cpus = 1 + getattr(model, "model_base", model)._user_params_aux.get("num_cpus", 0) * n_splits
+            model_needs_num_gpus = num_gpu_for_fitter + getattr(model, "model_base", model)._user_params_aux.get("num_gpus", 0) * n_splits
+
+            if len(job_refs) >= ag_ray_workers:
+                rest_models.extend(models[model_i:])
+                break
+            if (total_num_cpus <= -(org_total_num_cpus // 10)): # allow for oversubscribing to half the # of CPUs
+                rest_models.extend(models[model_i:])
+                break
+            if (model_needs_num_gpus > 0) and (total_num_gpus <= (model_needs_num_gpus // 2)):
+                logger.log(20, f"Delay scheduling model {model.name} due to not enough GPUs.")
+                rest_models.append(model)
+                continue
+
+            result_ref = remote_p.options(num_cpus=int(os.environ.get("AG_DISTRIBUTED_RAY_WORKER_N_CPUS", 1)), num_gpus=num_gpu_for_fitter).remote(
+                _self=self_ref,
+                model=ray.put(model),
+                X=X_ref,
+                y=y_ref,
+                hyperparameter_tune_kwargs=hyperparameter_tune_kwargs_ref,
+                time_split=time_split,
+                time_limit_model_split=time_limit_model_split,
+                time_limit=time_limit,
+                time_start=time_start,
+                kwargs=kwargs_ref,
             )
+            logger.log(20, f"Scheduled model training for {model.name}\n\t{result_ref}")
+            job_refs.append(result_ref)
 
-            if self.low_memory:
-                del model
-            models_valid += model_name_trained_lst
+            # Adjust for resources used
+            job_ref_to_resources[result_ref] = dict(num_cpus=model_needs_num_cpus, num_gpus=model_needs_num_gpus)
+            total_num_gpus -= model_needs_num_gpus
+            total_num_cpus -= model_needs_num_cpus
+            time.sleep(0.5)
 
+        unfinished_models = rest_models
+        unfinished = job_refs
+        while unfinished:
+            # Get results - only 1 at a time
+            finished, unfinished = ray.wait(unfinished, num_returns=1, timeout=int(time_limit - (time.time() - time_start)) if time_limit is not None else None)
+            if not finished:
+                logger.log(20, "Ran into timeout while waiting for model training to finish. Stopping now.")
+                for f in unfinished:
+                    ray.cancel(f)
+                break
+
+            to_free_resources = job_ref_to_resources[finished[0]]
+            total_num_gpus += to_free_resources["num_gpus"]
+            total_num_cpus += to_free_resources["num_cpus"]
+            del job_ref_to_resources[finished[0]]
+
+            model_name, model_path, model_type = ray.get(finished[0])
+
+            if model_path is None:
+                logger.log(20, f"Model training failed for {model_name if isinstance(model_name, str) else model_name.name}.")
+            else:
+                logger.log(20, f"Finished all jobs for {model_name}. #Running {len(unfinished)}. "
+                               f"Time remaining for this layer {int(time_limit - (time.time() - time_start)) if time_limit is not None else -1}s...")
+                # Self object is not mutated during worker execution, so no need to add model to self (again)
+                self._add_model(model_type.load(path=os.path.join(self.path, model_path), reset_paths=self.reset_paths),
+                                stack_name=kwargs["stack_name"], level=kwargs["level"], force_del_model=False)
+                models_valid += [model_name]
+
+            # Stop due to time limit
+            if (time_limit is not None) and ((time.time() - time_start) > time_limit):
+                logger.log(20, "Time limit reached for this stacking layer. Stopping model training and cancel pending tasks.")
+                for f in unfinished:
+                    ray.cancel(f)
+                break
+
+            # Re-schedule workers
+            model_i = 0
+            while (len(unfinished) < ag_ray_workers) and unfinished_models:
+                # available_resources = ray.available_resources()
+                # print(available_resources)
+                if model_i >= len(unfinished_models):
+                    logger.log(20, "Delay scheduling any model due to not being able to schedule any yet-to-fit model.")
+                    break
+
+                model = unfinished_models[model_i]
+                num_gpu_for_fitter = num_gpus_for_model(model)
+                model_needs_num_cpus = 1 + getattr(model, "model_base", model)._user_params_aux.get("num_cpus",0) * n_splits
+                model_needs_num_gpus = num_gpu_for_fitter + getattr(model, "model_base", model)._user_params_aux.get("num_gpus", 0) * n_splits
+
+                av_cpus = total_num_cpus # min(available_resources.get("CPU", 0), total_num_cpus)
+                av_gpus = total_num_gpus # min(available_resources.get("GPU", 0), total_num_gpus)
+                if (av_cpus<= -(org_total_num_cpus // 10)): # allow for oversubscribing 10% of the # of CPUs
+                    # logger.log(20, f"Delay scheduling model {model.name} due to not enough CPUs.")
+                    model_i += 1
+                    continue
+                if (model_needs_num_gpus > 0) and (av_gpus <= (model_needs_num_gpus // 2)):
+                    # logger.log(20, f"Delay scheduling model {model.name} due to not enough GPUs.")
+                    model_i += 1
+                    continue
+
+                result_ref = remote_p.options(num_cpus=int(os.environ.get("AG_DISTRIBUTED_RAY_WORKER_N_CPUS", 1)), num_gpus=num_gpu_for_fitter).remote(
+                    _self=self_ref,
+                    model=ray.put(model),
+                    X=X_ref,
+                    y=y_ref,
+                    hyperparameter_tune_kwargs=hyperparameter_tune_kwargs_ref,
+                    time_split=time_split,
+                    time_limit_model_split=time_limit_model_split,
+                    time_limit=time_limit,
+                    time_start=time_start,
+                    kwargs=kwargs_ref,
+                )
+                unfinished.append(result_ref)
+                job_ref_to_resources[result_ref] = dict(num_cpus=model_needs_num_cpus, num_gpus=model_needs_num_gpus)
+                total_num_gpus -= model_needs_num_gpus
+                total_num_cpus -= model_needs_num_cpus
+                logger.log(20, f"Scheduled model training for {model.name}\n\t{result_ref}")
+                del model, unfinished_models[model_i]
+                model_i = 0
+                time.sleep(0.5)
+
+        # Clean up ray
+        ray.internal.free(object_refs=[self_ref, X_ref, y_ref, kwargs_ref, hyperparameter_tune_kwargs_ref])
+        del self_ref, X_ref, y_ref, kwargs_ref, hyperparameter_tune_kwargs_ref
+
+        logger.log(20, "Finished all work this stacking layer.")
         return models_valid
 
     def _train_multi(
@@ -2570,6 +2909,7 @@ class AbstractTrainer:
         n_repeats=None,
         n_repeat_start=0,
         time_limit=None,
+        force_full_repeated_cross_validation: bool = False,
         **kwargs,
     ) -> List[str]:
         """
@@ -2586,7 +2926,7 @@ class AbstractTrainer:
             n_repeats = self.n_repeats
         if (k_fold == 0) and (n_repeats != 1):
             raise ValueError(f"n_repeats must be 1 when k_fold is 0, values: ({n_repeats}, {k_fold})")
-        if time_limit is None and feature_prune_kwargs is None:
+        if (time_limit is None and feature_prune_kwargs is None) or force_full_repeated_cross_validation:
             n_repeats_initial = n_repeats
         else:
             n_repeats_initial = 1
@@ -3964,3 +4304,119 @@ class AbstractTrainer:
             assert len(quantile_levels) > 0, f"quantile_levels must not be an empty list (quantile_levels={quantile_levels})"
         else:
             assert quantile_levels is None, f"quantile_levels must be None when problem_type='{problem_type}' (quantile_levels={quantile_levels})"
+
+def _remote_train_multi_fold(*, _self, model, X, y, hyperparameter_tune_kwargs, time_split, time_limit_model_split, time_limit, time_start, kwargs):
+    org_model_name = model
+    if isinstance(model, str):
+        model = _self.load_model(model)
+    elif _self.low_memory:
+        model = copy.deepcopy(model)
+    if hyperparameter_tune_kwargs is not None and isinstance(hyperparameter_tune_kwargs, dict):
+        hyperparameter_tune_kwargs_model = hyperparameter_tune_kwargs.get(model.name, None)
+    else:
+        hyperparameter_tune_kwargs_model = None
+    # TODO: Only update scores when finished, only update model as part of final models if finished!
+    if time_split:
+        time_left = time_limit_model_split
+    else:
+        if time_limit is None:
+            time_left = None
+        else:
+            time_start_model = time.time()
+            time_left = time_limit - (time_start_model - time_start)
+    model_name_list = _self._train_single_full(
+        X, y, model, time_limit=time_left, hyperparameter_tune_kwargs=hyperparameter_tune_kwargs_model, **kwargs
+    )
+
+    if not model_name_list:
+        return org_model_name, None, None
+    model_name = model_name_list[0]
+
+    if _self.low_memory:
+        del model
+
+    return model_name, _self.get_model_attribute(model=model_name, attribute="path"), _self.get_model_attribute(model=model_name, attribute="type")
+
+def _remote_refit(*,_self, original_model_name, level, X, y, X_val, y_val, X_unlabeled, kwargs):
+    original_model_name = copy.copy(original_model_name)
+    model=_self.load_model(original_model_name)
+    model_name=model.name
+    reuse_first_fold=False
+    if isinstance(model,BaggedEnsembleModel):
+        # Reuse if model is already _FULL and no X_val
+        if X_val is None:
+            reuse_first_fold=not model._bagged_mode
+    if not reuse_first_fold:
+        if isinstance(model,BaggedEnsembleModel):
+            can_refit_full=model._get_tags_child().get("can_refit_full",False)
+        else:
+            can_refit_full=model._get_tags().get("can_refit_full",False)
+        reuse_first_fold=not can_refit_full
+    if not reuse_first_fold:
+        model_full=model.convert_to_refit_full_template()
+        # Mitigates situation where bagged models barely had enough memory and refit requires more. Worst case results in OOM, but this lowers chance of failure.
+        model_full._user_params_aux["max_memory_usage_ratio"]=model.params_aux["max_memory_usage_ratio"]*1.15
+        # TODO: Do it for all models in the level at once to avoid repeated processing of data?
+        base_model_names=_self.get_base_model_names(model_name)
+        # FIXME: Logs for inference speed (1 row) are incorrect because
+        #  parents are non-refit models in this sequence and later correct after logging.
+        #  Avoiding fix at present to minimize hacks in the code.
+        #  Return to this later when Trainer controls all stacking logic to map correct parent.
+        models_trained=_self.stack_new_level_core(
+            X=X,y=y,X_val=X_val,y_val=y_val,X_unlabeled=X_unlabeled,models=[model_full],
+            base_model_names=base_model_names,level=level,stack_name=REFIT_FULL_NAME,
+            hyperparameter_tune_kwargs=None,feature_prune=False,k_fold=0,
+            n_repeats=1,ensemble_type=type(model),refit_full=True,**kwargs,)
+        if len(models_trained)==0:
+            reuse_first_fold=True
+            logger.log(30,f"WARNING: Refit training failure detected for '{model_name}'... "
+                          f"Falling back to using first fold to avoid downstream exception."
+                          f"\n\tThis is likely due to an out-of-memory error or other memory related issue. "
+                          f"\n\tPlease create a GitHub issue if this was triggered from a non-memory related problem.",)
+            if not model.params.get("save_bag_folds",True):
+                raise AssertionError(f"Cannot avoid training failure during refit for '{model_name}' by falling back to "
+                                     f"copying the first fold because it does not exist! (save_bag_folds=False)"
+                                     f"\n\tPlease specify `save_bag_folds=True` in the `.fit` call to avoid this exception.")
+
+    if reuse_first_fold:
+        # Perform fallback black-box refit logic that doesn't retrain.
+        model_full=model.convert_to_refit_full_via_copy()
+        # FIXME: validation time not correct for infer 1 batch time, needed to hack _is_refit=True to fix
+        logger.log(20,f"Fitting model: {model_full.name} | Skipping fit via cloning parent ...")
+        _self._add_model(model_full,stack_name=REFIT_FULL_NAME,level=level,_is_refit=True)
+        _self.save_model(model_full)
+        models_trained = [model_full.name]
+
+    assert len(models_trained) == 1
+    model_name = models_trained[0]
+
+    return original_model_name, model_name, _self.get_model_attribute(model=model_name, attribute="path"), _self.get_model_attribute(model=model_name, attribute="type"), reuse_first_fold
+
+
+def _remote_predict(*, _self, model_name, X, model_pred_proba_dict, record_pred_time, as_not_bagged) -> tuple[str, pd.DataFrame] | tuple[str, tuple[pd.DataFrame, float]]:
+    if record_pred_time:
+        time_start = time.time()
+
+    model = _self.load_model(model_name=model_name)
+
+
+    # This needed as for these models, we already need one GPU to load the model and only need one GPU to run the model.
+    # Hence, we can just not do remote predictions and stick to the below.
+    if as_not_bagged:
+        pred_func = model.predict_proba
+    else:
+        pred_func = model.parallel_remote_predict_proba
+
+    if isinstance(model, StackerEnsembleModel):
+        preprocess_kwargs = dict(infer=False, model_pred_proba_dict=model_pred_proba_dict)
+        predictions = pred_func(X, **preprocess_kwargs)
+    else:
+        predictions = pred_func(X)
+
+    if record_pred_time:
+        time_end = time.time()
+        pred_time = time_end - time_start
+
+        return model_name, (predictions, pred_time)
+
+    return model_name, predictions
