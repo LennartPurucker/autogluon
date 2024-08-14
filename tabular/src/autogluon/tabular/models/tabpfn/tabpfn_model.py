@@ -32,7 +32,7 @@ class TabPFNModel(AbstractModel):
         try:
             # Workaround for two TabPFN versions in the code
             from tabpfn_old import TabPFNClassifier
-        else:
+        except ImportError:
             from tabpfn import TabPFNClassifier
 
         ag_params = self._get_ag_params()
