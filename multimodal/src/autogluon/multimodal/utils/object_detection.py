@@ -4,8 +4,6 @@ import os
 import warnings
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
-
-import defusedxml.ElementTree as ET
 import numpy as np
 import pandas as pd
 import PIL
@@ -330,6 +328,7 @@ def from_voc(
             img_list.extend([rp.stem for rp in rpath.glob("JPEGImages/*" + ext)])
     d = {"image": [], "rois": []}
     logger.info(f"Number of Images: {len(img_list)}")
+    import defusedxml.ElementTree as ET
     for stem in img_list:
         basename = stem + ".xml"
         anno_file = (rpath / "Annotations" / basename).resolve()
@@ -1059,6 +1058,7 @@ def dump_voc_classes(voc_annotation_path: str, voc_class_names_output_path: str 
     """
     files = os.listdir(voc_annotation_path)
     class_names = set()
+    import defusedxml.ElementTree as ET
     for f in files:
         if f.endswith(".xml"):
             xml_path = os.path.join(voc_annotation_path, f)
@@ -1129,6 +1129,7 @@ def process_voc_annotations(
     annotation_path_base_name = os.path.basename(voc_annotation_path)
     class_names = set()
     xml_file_names = []
+    import defusedxml.ElementTree as ET
     for f in files:
         xml_path = os.path.join(voc_annotation_path, f)
         tree = ET.parse(xml_path)

@@ -8,7 +8,6 @@ import torch
 import torchmetrics
 from omegaconf import DictConfig, OmegaConf
 from packaging import version
-from pytorch_metric_learning import distances, losses, miners
 from torch import nn, optim
 from torch.nn import functional as F
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
@@ -887,6 +886,7 @@ def get_metric_learning_distance_func(
     A distance function from the pytorch metric learning package.
     """
     if name.lower() == COSINE_SIMILARITY:
+        from pytorch_metric_learning import distances
         return distances.CosineSimilarity()
     else:
         raise ValueError(f"Unknown distance measure: {name}")
@@ -963,6 +963,8 @@ def get_matcher_loss_func(
         loss_type = allowable_loss_types[0]
 
     if loss_type.lower() == CONTRASTIVE_LOSS:
+        from pytorch_metric_learning import losses
+
         return losses.ContrastiveLoss(
             pos_margin=pos_margin,
             neg_margin=neg_margin,
@@ -1004,6 +1006,8 @@ def get_matcher_miner_func(
     A miner function to mine positive and negative samples.
     """
     if miner_type.lower() == PAIR_MARGIN_MINER:
+        from pytorch_metric_learning import miners
+
         return miners.PairMarginMiner(
             pos_margin=pos_margin,
             neg_margin=neg_margin,

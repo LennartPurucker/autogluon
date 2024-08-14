@@ -7,7 +7,6 @@ Code is partially adapted from its official implementation https://github.com/au
 import logging
 import random
 
-import nltk
 from PIL import Image, ImageEnhance, ImageOps
 
 from ..constants import AUTOMM, IMAGE, TEXT
@@ -205,6 +204,8 @@ def set_image_augmentation_space():
 
 
 def download_nltk():
+    import nltk
+
     try:
         nltk.data.find("tagger/averaged_perceptron_tagger")
     except LookupError:

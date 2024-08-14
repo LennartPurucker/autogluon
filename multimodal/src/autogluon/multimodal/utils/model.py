@@ -4,7 +4,6 @@ import logging
 import warnings
 from typing import Dict, List, Optional, Tuple, Union
 
-import timm
 from omegaconf import DictConfig, OmegaConf
 from torch import Tensor, nn
 
@@ -543,6 +542,8 @@ def modify_duplicate_model_names(
 
 
 def list_timm_models(pretrained=True):
+    import timm
+
     return timm.list_models(pretrained=pretrained)
 
 

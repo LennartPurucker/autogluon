@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import PIL
-import pytesseract
 
 from autogluon.core.utils import infer_problem_type as infer_basic_problem_type
 
@@ -323,6 +322,9 @@ def is_document_image_column(
         success = False
         if not isinstance(images, list):
             images = [images]
+
+        import pytesseract
+
         for per_image in images:
             try:
                 # convert images to string

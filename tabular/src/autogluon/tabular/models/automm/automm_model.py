@@ -201,6 +201,7 @@ class MultiModalPredictorModel(AbstractModel):
             params["env.num_gpus"] = num_gpus
         presets = params.pop("presets", None)
         seed = params.pop("seed", 0)
+        use_tb_logging = params.pop("use_tb_logging", False)
 
         self.model.fit(
             train_data=X,
@@ -210,6 +211,7 @@ class MultiModalPredictorModel(AbstractModel):
             hyperparameters=params,
             column_types=column_types,
             seed=seed,
+            use_tb_logging=use_tb_logging,
         )
 
         self.model.set_verbosity(verbosity)

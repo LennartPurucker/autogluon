@@ -10,9 +10,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import PIL
-import pytesseract
 import torch
-from nptyping import NDArray
+from numpy.typing import NDArray
 from PIL import ImageFile
 from torch import nn
 from torchvision import transforms
@@ -186,6 +185,8 @@ class DocumentProcessor:
         -------
         A dictionary with recognized text and corresponding bounding boxes.
         """
+        import pytesseract
+
         results = {}
         width, height = doc_image.size
         # apply ocr to the document image.

@@ -1,6 +1,10 @@
 import numpy as np
 import torch
-from timm.data.mixup import Mixup, cutmix_bbox_and_lam, mixup_target
+
+try:
+    from timm.data.mixup import Mixup, cutmix_bbox_and_lam, mixup_target
+except ImportError:
+    Mixup = object
 
 
 class MixupModule(Mixup):

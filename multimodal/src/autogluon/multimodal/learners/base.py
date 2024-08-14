@@ -529,6 +529,7 @@ class BaseLearner(ExportMixin, DistillationMixin, RealtimeMixin):
         seed: int,
         standalone: Optional[bool] = True,
         clean_ckpts: Optional[bool] = True,
+        use_tb_logging: Optional[bool] = False,
     ):
         if time_limit is not None:
             time_limit = timedelta(seconds=time_limit)
@@ -543,6 +544,7 @@ class BaseLearner(ExportMixin, DistillationMixin, RealtimeMixin):
             advanced_hyperparameters=self._advanced_hyperparameters,
             standalone=standalone,
             clean_ckpts=clean_ckpts,
+            use_tb_logging=use_tb_logging
         )
         if self._fit_called:  # continuous training
             continuous_train_args = dict(
@@ -626,6 +628,7 @@ class BaseLearner(ExportMixin, DistillationMixin, RealtimeMixin):
         standalone: Optional[bool] = True,
         hyperparameter_tune_kwargs: Optional[Dict] = None,
         clean_ckpts: Optional[bool] = True,
+        use_tb_logging: Optional[bool] = False,
         **kwargs,
     ):
         self.setup_save_path(save_path=save_path)
@@ -650,6 +653,7 @@ class BaseLearner(ExportMixin, DistillationMixin, RealtimeMixin):
             seed=seed,
             standalone=standalone,
             clean_ckpts=clean_ckpts,
+            use_tb_logging=use_tb_logging,
         )
         fit_returns = self.execute_fit()
         self.on_fit_end(
@@ -1234,6 +1238,7 @@ class BaseLearner(ExportMixin, DistillationMixin, RealtimeMixin):
         model: Optional[nn.Module] = None,
         standalone: bool = True,
         clean_ckpts: bool = True,
+        use_tb_logging: bool = False,
     ):
         self.on_fit_per_run_start(seed=seed, save_path=save_path)
         config = self.get_config_per_run(config=config, hyperparameters=hyperparameters)
@@ -1294,7 +1299,13 @@ class BaseLearner(ExportMixin, DistillationMixin, RealtimeMixin):
         )
         callbacks = self.get_callbacks_per_run(save_path=save_path, config=config, litmodule=litmodule)
         plugins = self.get_plugins_per_run(model=model, peft_param_names=peft_param_names)
-        tb_logger = self.get_tb_logger(save_path=save_path)
+
+        if use_tb_logging:
+            tb_logger = self.get_tb_logger(save_path=save_path)
+        else:
+            from lightning.pytorch.loggers import CSVLogger
+
+            tb_logger = CSVLogger(save_dir=save_path)
         num_gpus, strategy = self.get_num_gpus_and_strategy_per_run(config=config)
         precision = self.get_precision_per_run(num_gpus=num_gpus, precision=config.env.precision)
         grad_steps = self.get_grad_steps(num_gpus=num_gpus, config=config)

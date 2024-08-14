@@ -10,13 +10,7 @@ import numpy as np
 import pandas as pd
 import PIL
 from omegaconf import ListConfig
-from text_unidecode import unidecode
-from timm.data.constants import (
-    IMAGENET_DEFAULT_MEAN,
-    IMAGENET_DEFAULT_STD,
-    IMAGENET_INCEPTION_MEAN,
-    IMAGENET_INCEPTION_STD,
-)
+
 from tokenizers import pre_tokenizers
 from torchvision import transforms
 
@@ -265,6 +259,7 @@ def register_encoding_decoding_error_handlers() -> None:
 
 def normalize_txt(text: str) -> str:
     """Resolve the encoding problems and normalize the abnormal characters."""
+    from text_unidecode import unidecode
 
     text = (
         text.encode("raw_unicode_escape")
@@ -605,6 +600,12 @@ def image_mean_std(norm_type: str):
     -------
     Normalization mean and std.
     """
+    from timm.data.constants import (
+        IMAGENET_DEFAULT_MEAN,
+        IMAGENET_DEFAULT_STD,
+        IMAGENET_INCEPTION_MEAN,
+        IMAGENET_INCEPTION_STD,
+    )
     if norm_type == "inception":
         return IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
     elif norm_type == "imagenet":

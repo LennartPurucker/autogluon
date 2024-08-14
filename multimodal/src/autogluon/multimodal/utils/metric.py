@@ -4,7 +4,6 @@ import operator
 import warnings
 from typing import Dict, List, Optional, Tuple, Union
 
-import evaluate
 import numpy as np
 from sklearn.metrics import f1_score
 
@@ -220,6 +219,8 @@ def compute_score(
     Computed score.
     """
     if isinstance(metric, str) and metric in [OVERALL_ACCURACY, OVERALL_F1]:
+        import evaluate
+
         metric = evaluate.load("seqeval")
         warnings.filterwarnings("ignore")
         for p in metric_data[Y_TRUE]:

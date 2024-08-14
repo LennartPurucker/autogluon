@@ -413,6 +413,7 @@ class MultiModalPredictor:
         standalone: Optional[bool] = True,
         hyperparameter_tune_kwargs: Optional[dict] = None,
         clean_ckpts: Optional[bool] = True,
+        use_tb_logging: Optional[bool] = False,
     ):
         """
         Fit models to predict a column of a data table (label) based on the other columns (features).
@@ -522,6 +523,7 @@ class MultiModalPredictor:
             hyperparameter_tune_kwargs=hyperparameter_tune_kwargs,
             clean_ckpts=clean_ckpts,
             id_mappings=id_mappings,
+            use_tb_logging=use_tb_logging,
         )
 
         return self

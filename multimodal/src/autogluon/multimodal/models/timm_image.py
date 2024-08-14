@@ -4,8 +4,6 @@ import os
 from typing import Dict, List, Optional
 
 import torch
-from timm import create_model
-from timm.layers.linear import Linear
 from torch import nn
 
 from ..constants import AUTOMM, COLUMN, COLUMN_FEATURES, FEATURES, IMAGE, IMAGE_VALID_NUM, LABEL, LOGITS, MASKS
@@ -53,10 +51,14 @@ class TimmAutoModelForImagePrediction(nn.Module):
             Whether using the pretrained timm models. If pretrained=True, download the pretrained model.
         """
         super().__init__()
+        from timm import create_model
+
         # In TIMM, if num_classes==0, then create_model would automatically set self.model.head = nn.Identity()
         logger.debug(f"initializing {checkpoint_name}")
         if os.path.exists(checkpoint_name):
             checkpoint_path = f"{checkpoint_name}/pytorch_model.bin"
+            from timm.layers.linear import Linear
+
             try:
                 with open(f"{checkpoint_name}/config.json") as f:
                     self.config = json.load(f)
