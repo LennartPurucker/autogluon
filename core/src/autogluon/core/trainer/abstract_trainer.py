@@ -2812,9 +2812,11 @@ class AbstractTrainer:
 
         unfinished_models = rest_models
         unfinished = job_refs
+        # include 5 second overhead.
+        timeout = int(time_limit - (time.time() - time_start) + 5) if time_limit is not None else None
         while unfinished:
             # Get results - only 1 at a time
-            finished, unfinished = ray.wait(unfinished, num_returns=1, timeout=int(time_limit - (time.time() - time_start)) if time_limit is not None else None)
+            finished, unfinished = ray.wait(unfinished, num_returns=1, timeout=timeout)
             if not finished:
                 logger.log(20, "Ran into timeout while waiting for model training to finish. Stopping now.")
                 for f in unfinished:
