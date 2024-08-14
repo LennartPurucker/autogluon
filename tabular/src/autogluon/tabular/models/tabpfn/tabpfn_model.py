@@ -28,7 +28,12 @@ class TabPFNModel(AbstractModel):
         self._feature_generator = None
 
     def _fit(self, X: pd.DataFrame, y: pd.Series, **kwargs):
-        from tabpfn import TabPFNClassifier
+
+        try:
+            # Workaround for two TabPFN versions in the code
+            from tabpfn_old import TabPFNClassifier
+        else:
+            from tabpfn import TabPFNClassifier
 
         ag_params = self._get_ag_params()
         sample_rows = ag_params.get("sample_rows")

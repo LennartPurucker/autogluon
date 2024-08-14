@@ -462,7 +462,10 @@ class BaggedEnsembleModel(AbstractModel):
 
     def parallel_remote_predict_proba(self, X, normalize=False, **kwargs):
         import ray
-        X_ref = ray.put(self.preprocess(X, model=self.load_child(self.models[0]), **kwargs))
+        # TODO: determine the impact of forcing preprocess_nonadaptive=True for all child models.
+        #   - We can often not load self.models[0] for GPU models in the distributed setting here.
+        X_ref = ray.put(X) # self.preprocess(X, model=self.load_child(self.models[0]), **kwargs)
+        preprocess_nonadaptive = True  # needs to be true if we preprocess per job in parallel
         self_ref = ray.put(self)
 
         remote_func = ray.remote(
@@ -479,6 +482,7 @@ class BaggedEnsembleModel(AbstractModel):
                 model_name=model,
                 X=X_ref,
                 normalize=normalize,
+                preprocess_nonadaptive=preprocess_nonadaptive,
             )
             unfinished.append(result_ref)
             job_refs_map[result_ref] = job_index
@@ -1477,6 +1481,6 @@ class BaggedEnsembleModel(AbstractModel):
         return self._get_model_base()._get_tags()
 
 
-def _func_remote_pred_proba(*, _self, model_name, X, normalize) -> np.ndarray:
+def _func_remote_pred_proba(*, _self, model_name, X, normalize, preprocess_nonadaptive: bool) -> np.ndarray:
     model = _self.load_child(model_name)
-    return model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+    return model.predict_proba(X=X, preprocess_nonadaptive=preprocess_nonadaptive, normalize=normalize)
