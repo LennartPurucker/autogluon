@@ -4209,18 +4209,18 @@ class AbstractTrainer:
                     f"Warning: Infinity found during calibration, skipping calibration on {model.name}! "
                     f"This can occur when the model is absolutely certain of a validation prediction (1.0 pred_proba).",
                 )
-
-            # Check that scaling improves performance for the target metric
-            score_without_temp = self.score_with_y_pred_proba(y=y_val, y_pred_proba=y_val_probs, weights=None)
-            scaled_y_val_probs = apply_temperature_scaling(y_val_probs, temp_scalar, problem_type=self.problem_type)
-            score_with_temp = self.score_with_y_pred_proba(y=y_val, y_pred_proba=scaled_y_val_probs, weights=None)
-
-            if score_with_temp > score_without_temp:
-                logger.log(15, f"Temperature term found is: {temp_scalar}")
-                model.params_aux["temperature_scalar"] = temp_scalar
-                model.save()
             else:
-                logger.log(15, f"Temperature did not improve performance, skipping calibration.")
+                # Check that scaling improves performance for the target metric
+                score_without_temp = self.score_with_y_pred_proba(y=y_val, y_pred_proba=y_val_probs, weights=None)
+                scaled_y_val_probs = apply_temperature_scaling(y_val_probs, temp_scalar, problem_type=self.problem_type)
+                score_with_temp = self.score_with_y_pred_proba(y=y_val, y_pred_proba=scaled_y_val_probs, weights=None)
+
+                if score_with_temp > score_without_temp:
+                    logger.log(15, f"Temperature term found is: {temp_scalar}")
+                    model.params_aux["temperature_scalar"] = temp_scalar
+                    model.save()
+                else:
+                    logger.log(15, "Temperature did not improve performance, skipping calibration.")
 
 
     def calibrate_decision_threshold(
