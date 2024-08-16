@@ -941,8 +941,8 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
                 to any amount of labeled data.
             verbosity : int
                 If specified, overrides the existing `predictor.verbosity` value.
-            raise_on_no_models_fitted: bool
-                If True, will raise an exception if no models were successfully fit during `fit()`.
+            raise_on_no_models_fitted: bool, default = False
+                If True, will raise a RuntimeError if no models were successfully fit during `fit()`.
             calibrate: bool or str, default = 'auto'
                 Note: It is recommended to use ['auto', False] as the values and avoid True.
                 If 'auto' will automatically set to True if the problem_type and eval_metric are suitable for calibration.
@@ -1518,16 +1518,17 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
         calibrate_decision_threshold=False,
         infer_limit=None,
         refit_full_kwargs: dict = None,
-        raise_on_no_models_fitted: bool = False
+        raise_on_no_models_fitted: bool = False,
     ):
         if refit_full_kwargs is None:
             refit_full_kwargs = {}
         if not self.model_names():
-
             if raise_on_no_models_fitted:
-                raise RuntimeError("No models were trained successfully during fit()."
-                                   " Inspect the log output or increase verbosity to determine why no models were fit."
-                                   " Alternatively, set `raise_on_no_models_fitted` to False during the fit call.")
+                raise RuntimeError(
+                    "No models were trained successfully during fit()."
+                    " Inspect the log output or increase verbosity to determine why no models were fit."
+                    " Alternatively, set `raise_on_no_models_fitted` to False during the fit call."
+                )
 
             logger.log(30, "Warning: No models found, skipping post_fit logic...")
             return
