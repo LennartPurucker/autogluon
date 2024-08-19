@@ -239,7 +239,8 @@ def early_stopping_custom(
         if time_limit:
             time_elapsed = time.time() - start_time
             time_left = time_limit - time_elapsed
-            if time_left <= 0:
+            # Early stop if no time left or not enough time for another iteration (plus 10% overhead)
+            if (time_left <= 0) or (time_left <= ((time_elapsed / (env.iteration + 1)) * 1.1)):
                 i = indices_to_check[0]
                 logger.log(
                     20,
