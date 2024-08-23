@@ -212,12 +212,8 @@ class AbstractTrainer:
 
         self.model_best = None
 
-        self.models = (
-            {}
-        )  # Dict of model name -> model object. A key, value pair only exists if a model is persisted in memory.  # TODO: v0.1 Rename and consider making private
-        self.model_graph = (
-            nx.DiGraph()
-        )  # Directed Acyclic Graph (DAG) of model interactions. Describes how certain models depend on the predictions of certain other models. Contains numerous metadata regarding each model.
+        self.models = {}  # Dict of model name -> model object. A key, value pair only exists if a model is persisted in memory.  # TODO: v0.1 Rename and consider making private
+        self.model_graph = nx.DiGraph()  # Directed Acyclic Graph (DAG) of model interactions. Describes how certain models depend on the predictions of certain other models. Contains numerous metadata regarding each model.
         self.reset_paths = False
 
         self._time_limit = None  # Internal float of the total time limit allowed for a given fit call. Used in logging statements.
@@ -4135,7 +4131,7 @@ class AbstractTrainer:
         best_candidate_model_rows = candidate_model_rows.loc[candidate_model_rows["score_val"] == candidate_model_rows["score_val"].max()]
         return self.load_model(best_candidate_model_rows.loc[best_candidate_model_rows["fit_time"].idxmin()]["model"])
 
-    def calibrate_model(self, model_name: str = None, lr: float = 0.01, max_iter: int = 1000, init_val: float = 1.0):
+    def calibrate_model(self, model_name: str = None, lr: float = 0.1, max_iter: int = 200, init_val: float = 1.0):
         """
         Applies temperature scaling to a model.
         Applies inverse softmax to predicted probs then trains temperature scalar
@@ -4148,9 +4144,9 @@ class AbstractTrainer:
         model_name: str: default = None
             model name to tune temperature scaling on.
             If None, will tune best model only. Best model chosen by validation score
-        lr: float: default = 0.01
+        lr: float: default = 0.1
             The learning rate for temperature scaling algorithm
-        max_iter: int: default = 1000
+        max_iter: int: default = 200
             Number of iterations optimizer should take for
             tuning temperature scaler
         init_val: float: default = 1.0
@@ -4208,6 +4204,11 @@ class AbstractTrainer:
                     15,
                     f"Warning: Infinity found during calibration, skipping calibration on {model.name}! "
                     f"This can occur when the model is absolutely certain of a validation prediction (1.0 pred_proba).",
+                )
+            elif temp_scalar <= 0:
+                logger.log(
+                    30,
+                    f"Warning: Temperature scaling found optimal at a negative value ({temp_scalar}). Disabling temperature scaling to avoid overfitting.",
                 )
             else:
                 # Check that scaling improves performance for the target metric
