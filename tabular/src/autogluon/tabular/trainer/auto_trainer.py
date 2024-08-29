@@ -46,6 +46,8 @@ class AutoTrainer(AbstractTrainer):
         hyperparameters,
         X_val=None,
         y_val=None,
+        X_test=None,
+        y_test=None,
         X_unlabeled=None,
         holdout_frac=0.1,
         num_stack_levels=0,
@@ -56,6 +58,7 @@ class AutoTrainer(AbstractTrainer):
         infer_limit_batch_size=None,
         use_bag_holdout=False,
         groups=None,
+        callbacks: List[callable] = None,
         **kwargs,
     ):
         for key in kwargs:
@@ -134,6 +137,8 @@ class AutoTrainer(AbstractTrainer):
             y=y,
             X_val=X_val,
             y_val=y_val,
+            X_test=X_test,
+            y_test=y_test,
             X_unlabeled=X_unlabeled,
             hyperparameters=hyperparameters,
             num_stack_levels=num_stack_levels,
@@ -143,6 +148,7 @@ class AutoTrainer(AbstractTrainer):
             infer_limit=infer_limit,
             infer_limit_batch_size=infer_limit_batch_size,
             groups=groups,
+            callbacks=callbacks,
         )
 
     def construct_model_templates_distillation(self, hyperparameters, **kwargs):
