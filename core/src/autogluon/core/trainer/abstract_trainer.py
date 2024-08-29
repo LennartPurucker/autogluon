@@ -2099,7 +2099,8 @@ class AbstractTrainer:
                 else:
                     time_left_total = time_limit
                 fit_log_message += f" Training model for up to {round(time_limit, 2)}s of the {round(time_left_total, 2)}s of remaining time."
-            logger.log(20, fit_log_message)
+            log_level = 10 if os.environ.get("AG_DISTRIBUTED_FIT_MODELS_PARALLEL", "False") == "True" else 20
+            logger.log(log_level, fit_log_message)
 
             if isinstance(model, BaggedEnsembleModel) and not compute_score:
                 # Do not perform OOF predictions when we don't compute a score.
@@ -2239,7 +2240,7 @@ class AbstractTrainer:
         )
         return model_metadata
 
-    def _add_model(self, model: AbstractModel, stack_name: str = "core", level: int = 1, y_pred_proba_val=None, _is_refit=False, force_del_model=False) -> bool:
+    def _add_model(self, model: AbstractModel, stack_name: str = "core", level: int = 1, y_pred_proba_val=None, _is_refit=False, force_del_model=False, is_distributed_main=False) -> bool:
         """
         Registers the fit model in the Trainer object. Stores information such as model performance, save path, model type, and more.
         To use a model in Trainer, self._add_model must be called.
@@ -2291,7 +2292,7 @@ class AbstractTrainer:
                         f"Model '{model.name}' depends on model '{base_model_name}', but '{base_model_name}' is not in a lower stack level. ('{model.name}' level: {level}, '{base_model_name}' level: {self.model_graph.nodes[base_model_name]['level']})"
                     )
                 self.model_graph.add_edge(base_model_name, model.name)
-        self._log_model_stats(model, _is_refit=_is_refit)
+        self._log_model_stats(model, _is_refit=_is_refit, is_distributed_main=is_distributed_main)
         if self.low_memory or force_del_model:
             del model
         return True
@@ -2321,10 +2322,14 @@ class AbstractTrainer:
             raise AssertionError(f'"{model}" is not a key in self.model_graph, cannot add attributes: {attributes}')
         self.model_graph.nodes[model].update(attributes)
 
-    def _log_model_stats(self, model, _is_refit=False):
+    def _log_model_stats(self, model, _is_refit=False, is_distributed_main=False):
         """Logs model fit time, val score, predict time, and predict_1_time"""
         model = self.load_model(model)
         print_weights = model._get_tags().get("print_weights", False)
+
+        is_log_during_distributed_fit = os.environ.get("AG_DISTRIBUTED_FIT_MODELS_PARALLEL", "False") == "True"
+        is_log_during_distributed_fit = is_log_during_distributed_fit and (not is_distributed_main)
+        log_level = 10 if is_log_during_distributed_fit else 20
 
         if print_weights:
             model_weights = model._get_model_weights()
@@ -2336,19 +2341,19 @@ class AbstractTrainer:
                     msg_weights += ", "
                 msg_weights += f"'{key}': {value}"
                 is_first = False
-            logger.log(20, f"\tEnsemble Weights: {{{msg_weights}}}")
+            logger.log(log_level, f"\tEnsemble Weights: {{{msg_weights}}}")
         if model.val_score is not None:
             if model.eval_metric.name != self.eval_metric.name:
-                logger.log(20, f"\tNote: model has different eval_metric than default.")
+                logger.log(log_level, f"\tNote: model has different eval_metric than default.")
             if not model.eval_metric.greater_is_better_internal:
                 sign_str = "-"
             else:
                 sign_str = ""
-            logger.log(20, f"\t{round(model.val_score, 4)}\t = Validation score   ({sign_str}{model.eval_metric.name})")
+            logger.log(log_level, f"\t{round(model.val_score, 4)}\t = Validation score   ({sign_str}{model.eval_metric.name})")
         if model.fit_time is not None:
-            logger.log(20, f"\t{round(model.fit_time, 2)}s\t = Training   runtime")
+            logger.log(log_level, f"\t{round(model.fit_time, 2)}s\t = Training   runtime")
         if model.predict_time is not None:
-            logger.log(20, f"\t{round(model.predict_time, 2)}s\t = Validation runtime")
+            logger.log(log_level, f"\t{round(model.predict_time, 2)}s\t = Validation runtime")
         predict_n_time_per_row = self.get_model_attribute_full(model=model.name, attribute="predict_n_time_per_row")
         predict_n_size = self.get_model_attribute_full(model=model.name, attribute="predict_n_size", func=min)
         if predict_n_time_per_row is not None and predict_n_size is not None:
@@ -2370,23 +2375,23 @@ class AbstractTrainer:
                 predict_1_time_full = self.get_model_attribute_full(model=model.name, attribute="predict_1_time")
 
             predict_1_time_log, time_unit = convert_time_in_s_to_log_friendly(time_in_sec=predict_1_time)
-            logger.log(20, f"\t{round(predict_1_time_log, 3)}{time_unit}\t = Validation runtime (1 row | {predict_1_batch_size} batch size | MARGINAL)")
+            logger.log(log_level, f"\t{round(predict_1_time_log, 3)}{time_unit}\t = Validation runtime (1 row | {predict_1_batch_size} batch size | MARGINAL)")
 
             predict_1_time_full_log, time_unit = convert_time_in_s_to_log_friendly(time_in_sec=predict_1_time_full)
-            logger.log(20, f"\t{round(predict_1_time_full_log, 3)}{time_unit}\t = Validation runtime (1 row | {predict_1_batch_size} batch size)")
+            logger.log(log_level, f"\t{round(predict_1_time_full_log, 3)}{time_unit}\t = Validation runtime (1 row | {predict_1_batch_size} batch size)")
 
             if not _is_refit:
                 predict_1_time_child = self.get_model_attribute(model=model.name, attribute="predict_1_child_time")
                 predict_1_time_child_log, time_unit = convert_time_in_s_to_log_friendly(time_in_sec=predict_1_time_child)
                 logger.log(
-                    20,
+                    log_level,
                     f"\t{round(predict_1_time_child_log, 3)}{time_unit}\t = Validation runtime (1 row | {predict_1_batch_size} batch size | REFIT | MARGINAL)",
                 )
 
                 predict_1_time_full_child = self.get_model_attribute_full(model=model.name, attribute="predict_1_child_time")
                 predict_1_time_full_child_log, time_unit = convert_time_in_s_to_log_friendly(time_in_sec=predict_1_time_full_child)
                 logger.log(
-                    20, f"\t{round(predict_1_time_full_child_log, 3)}{time_unit}\t = Validation runtime (1 row | {predict_1_batch_size} batch size | REFIT)"
+                    log_level, f"\t{round(predict_1_time_full_child_log, 3)}{time_unit}\t = Validation runtime (1 row | {predict_1_batch_size} batch size | REFIT)"
                 )
 
     # TODO: Split this to avoid confusion, HPO should go elsewhere?
@@ -2833,7 +2838,7 @@ class AbstractTrainer:
                                f"Time remaining for this layer {int(time_limit - (time.time() - time_start)) if time_limit is not None else -1}s...")
                 # Self object is not mutated during worker execution, so no need to add model to self (again)
                 self._add_model(model_type.load(path=os.path.join(self.path, model_path), reset_paths=self.reset_paths),
-                                stack_name=kwargs["stack_name"], level=kwargs["level"], force_del_model=False)
+                                stack_name=kwargs["stack_name"], level=kwargs["level"], force_del_model=False, is_distributed_main=True)
                 models_valid += [model_name]
 
             # Stop due to time limit
@@ -4317,6 +4322,9 @@ class AbstractTrainer:
             assert quantile_levels is None, f"quantile_levels must be None when problem_type='{problem_type}' (quantile_levels={quantile_levels})"
 
 def _remote_train_multi_fold(*, _self, model, X, y, hyperparameter_tune_kwargs, time_split, time_limit_model_split, time_limit, time_start, kwargs):
+    from autogluon.common.utils.log_utils import reset_logger_for_remote_call
+    reset_logger_for_remote_call(verbosity=_self.verbosity)
+
     org_model_name = model
     if isinstance(model, str):
         model = _self.load_model(model)
@@ -4349,6 +4357,9 @@ def _remote_train_multi_fold(*, _self, model, X, y, hyperparameter_tune_kwargs, 
     return model_name, _self.get_model_attribute(model=model_name, attribute="path"), _self.get_model_attribute(model=model_name, attribute="type")
 
 def _remote_refit(*,_self, original_model_name, level, X, y, X_val, y_val, X_unlabeled, kwargs):
+    from autogluon.common.utils.log_utils import reset_logger_for_remote_call
+    reset_logger_for_remote_call(verbosity=_self.verbosity)
+
     original_model_name = copy.copy(original_model_name)
     model=_self.load_model(original_model_name)
     model_name=model.name
@@ -4403,8 +4414,10 @@ def _remote_refit(*,_self, original_model_name, level, X, y, X_val, y_val, X_unl
 
     return original_model_name, model_name, _self.get_model_attribute(model=model_name, attribute="path"), _self.get_model_attribute(model=model_name, attribute="type"), reuse_first_fold
 
-
 def _remote_predict(*, _self, model_name, X, model_pred_proba_dict, record_pred_time, as_not_bagged) -> tuple[str, pd.DataFrame] | tuple[str, tuple[pd.DataFrame, float]]:
+    from autogluon.common.utils.log_utils import reset_logger_for_remote_call
+    reset_logger_for_remote_call(verbosity=_self.verbosity)
+
     if record_pred_time:
         time_start = time.time()
 

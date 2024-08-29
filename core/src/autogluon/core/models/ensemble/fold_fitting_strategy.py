@@ -24,6 +24,7 @@ from ...pseudolabeling.pseudolabeling import assert_pseudo_column_match
 from ...ray.resources_calculator import ResourceCalculatorFactory
 from ...utils.exceptions import NotEnoughCudaMemoryError, NotEnoughMemoryError, TimeLimitExceeded
 from ..abstract.abstract_model import AbstractModel
+from autogluon.common.utils.log_utils import reset_logger_for_remote_call
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +375,8 @@ def _ray_fit(
     head_node_id: str,
     model_sync_path: Optional[str] = None,
 ):
+    reset_logger_for_remote_call(verbosity=kwargs_fold.get("verbosity", 2))
+
     import ray  # ray must be present
 
     node_id = ray.get_runtime_context().get_node_id()
