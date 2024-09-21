@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 # TODO: handle interactions for multiclass
 class ExplainableBoostingMachine(AbstractModel):
     _feature_generator: LabelEncoderFeatureGenerator = None
-    _cat_features: list[str] = None
+    _category_features: list[str] = None
 
     def _get_model_type(self):
         match self.problem_type:
@@ -36,41 +36,13 @@ class ExplainableBoostingMachine(AbstractModel):
                 raise ValueError(f"Unsupported problem type: {self.problem_type}")
         return model_cls
 
-    def _preprocess(self, X: pd.DataFrame, is_train: bool = False, **kwargs) -> np.ndarray:
-        """Preprocess data for EBM.
+    def _preprocess_nonadaptive(self, X, **kwargs):
+        X = super()._preprocess_nonadaptive(X, **kwargs)
 
-        This does the following:
-            - Impute missing values.
-            - Encode categorical features.
-            - Convert to numpy array.
-        """
-        X = super()._preprocess(X, **kwargs)
-        from sklearn.impute import SimpleImputer
+        if self._category_features is None:
+            self._category_features = list(X.select_dtypes(include="category").columns)
 
-        if is_train:
-            self._feature_generator = LabelEncoderFeatureGenerator(verbosity=0)
-            self._feature_generator.fit(X=X)
-
-        if self._feature_generator.features_in:
-            # This converts categorical features to numeric via stateful label encoding.
-            X = X.copy()
-            X[self._feature_generator.features_in] = self._feature_generator.transform(X=X)
-            self._cat_features = self._feature_generator.features_in[:]
-        else:
-            self._cat_features = []
-
-        # -- Imputation
-        if is_train:
-            self._imputer = SimpleImputer(keep_empty_features=True)
-            self._imputer.fit(X=X)
-
-        X = self._imputer.transform(X=X)
-
-        # -- Convert to numpy array
-        if not isinstance(X, np.ndarray):
-            X = X.to_numpy()
-
-        return X.astype(np.float32)
+        return X
 
     def _fit(
         self,
@@ -112,16 +84,15 @@ class ExplainableBoostingMachine(AbstractModel):
                 f_type = "ordinal"
             elif c in nominal_columns:
                 f_type = "nominal"
-            elif c in self._cat_features:
-                # Fallback with user did not specify column type.
+            elif c in self._category_features:
+                # Fallback if user did not specify column type.
                 f_type = "nominal"
             else:
-                f_type = "None"
+                f_type = "auto"
             feature_types.append(f_type)
 
         # Default parameters for EBM
         extra_kwargs = dict(
-            validation_size=len(X),
             early_stopping_rounds=50,
             outer_bags=1,  # AutoGluon ensemble creates outer bags, no need for this overhead.
             inner_bags=0,  # We supply the validation set, no need for inner bags.
