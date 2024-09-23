@@ -4,12 +4,11 @@ import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 from autogluon.core.constants import BINARY, MULTICLASS, REGRESSION
 from autogluon.core.models import AbstractModel
-from autogluon.features.generators import LabelEncoderFeatureGenerator
 
 if TYPE_CHECKING:
-    import pandas as pd
     from autogluon.core.metrics import Scorer
 
 
@@ -19,7 +18,6 @@ if TYPE_CHECKING:
 # TODO: fix joblib errors when using EBM
 # TODO: handle interactions for multiclass
 class ExplainableBoostingMachine(AbstractModel):
-    _feature_generator: LabelEncoderFeatureGenerator = None
     _category_features: list[str] = None
 
     def _get_model_type(self):
@@ -57,12 +55,11 @@ class ExplainableBoostingMachine(AbstractModel):
     ):
         # Create validation set if not provided to enable early stopping.
         if X_val is None:
-            import pandas as pd
             from autogluon.core.utils import generate_train_test_split
 
             X_train, X_val, y_train, y_val = generate_train_test_split(
-                X=pd.DataFrame(X),
-                y=pd.Series(y),
+                X=X,
+                y=y,
                 problem_type=self.problem_type,
                 test_size=0.2,
                 random_state=0,
@@ -107,8 +104,8 @@ class ExplainableBoostingMachine(AbstractModel):
         self.model = model_cls(**extra_kwargs)
 
         # Handle validation data format for EBM
-        fit_X = np.vstack([X, X_val])
-        fit_y = np.hstack([y, y_val])
+        fit_X = pd.concat([X, X_val], ignore_index=True)
+        fit_y = pd.concat([y, y_val], ignore_index=True)
         bag = np.full(len(fit_X), 1)
         bag[len(X) :] = -1
 
