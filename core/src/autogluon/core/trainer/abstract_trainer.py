@@ -216,7 +216,7 @@ class AbstractTrainer:
         self._callback_early_stop = False
 
 
-        self._max_classes_oof : int | None = 25
+        self._max_classes_oof : int | None = 50
         """Maximum number of classes to use for out-of-fold predictions. If None, all classes are used.
         Only used for multiclass classification problems."""
         # FIXME: determine how to set this from the outside (needs to be attribute due to multiple disconnected places that need this)
