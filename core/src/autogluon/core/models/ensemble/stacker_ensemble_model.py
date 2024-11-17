@@ -271,8 +271,14 @@ class StackerEnsembleModel(BaggedEnsembleModel):
 
     def set_stack_columns(self, stack_column_prefix_lst):
         if self.problem_type in [MULTICLASS, SOFTCLASS]:
-            stack_columns = [stack_column_prefix + "_" + str(cls) for stack_column_prefix in stack_column_prefix_lst for cls in range(self.num_classes)]
-            num_pred_cols_per_model = self.num_classes
+            # FIXME: determine how to sync with AbstractTrainer after benchmark
+            self._max_classes_oof : int | None = 25
+            if (self.problem_type != MULTICLASS) or (self.num_classes <= self._max_classes_oof):
+                self._max_classes_oof = None
+            num_classes = self.num_classes if self._max_classes_oof is None else min(self.num_classes, self._max_classes_oof)
+
+            stack_columns = [stack_column_prefix + "_" + str(cls) for stack_column_prefix in stack_column_prefix_lst for cls in range(num_classes)]
+            num_pred_cols_per_model = num_classes
         elif self.problem_type == QUANTILE:
             stack_columns = [stack_column_prefix + "_" + str(q) for stack_column_prefix in stack_column_prefix_lst for q in self.quantile_levels]
             num_pred_cols_per_model = len(self.quantile_levels)

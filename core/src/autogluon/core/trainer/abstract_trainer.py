@@ -215,6 +215,16 @@ class AbstractTrainer:
         self.callbacks: List[AbstractCallback] = []
         self._callback_early_stop = False
 
+
+        self._max_classes_oof : int | None = 25
+        """Maximum number of classes to use for out-of-fold predictions. If None, all classes are used.
+        Only used for multiclass classification problems."""
+        # FIXME: determine how to set this from the outside (needs to be attribute due to multiple disconnected places that need this)
+        if (self.problem_type != MULTICLASS) or (self.num_classes <= self._max_classes_oof):
+            self._max_classes_oof = None
+
+
+
     # path_root is the directory containing learner.pkl
     @property
     def path_root(self) -> str:
@@ -1104,6 +1114,13 @@ class AbstractTrainer:
         # Get model prediction order
         return list(nx.lexicographical_topological_sort(subgraph))
 
+    def condense_pred_proba(self, pred_proba: np.ndarray) -> np.ndarray:
+        if self._max_classes_oof is not None:
+            # Cut off classes after max_classes_oof - 1 many and sum the rest into one final max_classes_oof-th class
+            pred_proba = pred_proba[:, np.argpartition(-pred_proba.sum(axis=0), self._max_classes_oof-1)]
+            return np.hstack((pred_proba[:, :self._max_classes_oof - 1], pred_proba[:, self._max_classes_oof  - 1:].sum(axis=1, keepdims=True)))
+        return pred_proba
+
     # TODO: Consider adding persist to disk functionality for pred_proba dictionary to lessen memory burden on large multiclass problems.
     #  For datasets with 100+ classes, this function could potentially run the system OOM due to each pred_proba numpy array taking significant amounts of space.
     #  This issue already existed in the previous level-based version but only had the minimum required predictions in memory at a time, whereas this has all model predictions in memory.
@@ -1183,6 +1200,8 @@ class AbstractTrainer:
                 time_end = time.time()
                 model_pred_time_dict[model_name] = time_end - time_start
 
+            model_pred_proba_dict[model_name] = self.condense_pred_proba(model_pred_proba_dict[model_name])
+
         if record_pred_time:
             return model_pred_proba_dict, model_pred_time_dict
         else:
@@ -1192,7 +1211,7 @@ class AbstractTrainer:
         """
         Returns a dictionary of out-of-fold prediction probabilities, keyed by model name
         """
-        return {model: self.get_model_oof(model) for model in models}
+        return {model: self.condense_pred_proba(self.get_model_oof(model)) for model in models}
 
     def get_model_pred_dict(self, X: pd.DataFrame, models: List[str], record_pred_time: bool = False, **kwargs):
         """
@@ -1397,8 +1416,10 @@ class AbstractTrainer:
         Additionally output the number of columns per model as an int.
         """
         if self.problem_type in [MULTICLASS, SOFTCLASS]:
-            stack_column_names = [stack_column_prefix + "_" + str(cls) for stack_column_prefix in models for cls in range(self.num_classes)]
-            num_columns_per_model = self.num_classes
+            # FIXME: change names to be more descriptive after re-mapping
+            num_classes = self.num_classes if self._max_classes_oof is None else min(self.num_classes, self._max_classes_oof)
+            stack_column_names = [stack_column_prefix + "_" + str(cls) for stack_column_prefix in models for cls in range(num_classes)]
+            num_columns_per_model = num_classes
         elif self.problem_type == QUANTILE:
             stack_column_names = [stack_column_prefix + "_" + str(q) for stack_column_prefix in models for q in self.quantile_levels]
             num_columns_per_model = len(self.quantile_levels)
