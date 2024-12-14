@@ -750,7 +750,7 @@ class BaggedEnsembleModel(AbstractModel):
             self._n_repeats_finished = self._n_repeats - 1
 
     @staticmethod
-    def _generate_fold_configs(*, X, y, cv_splitter, k_fold_start, k_fold_end, n_repeat_start, n_repeat_end) -> (list, int, int):
+    def _generate_fold_configs(*, X, y, cv_splitter, k_fold_start, k_fold_end, n_repeat_start, n_repeat_end, holdout_cv: bool = True) -> (list, int, int):
         """
         Generates fold configs given a cv_splitter, k_fold start-end and n_repeat start-end.
         Fold configs are used by inheritors of FoldFittingStrategy when fitting fold models.
@@ -761,7 +761,7 @@ class BaggedEnsembleModel(AbstractModel):
         kfolds = cv_splitter.split(X=X, y=y)
 
         fold_start = n_repeat_start * k_fold + k_fold_start
-        fold_end = (n_repeat_end - 1) * k_fold + k_fold_end
+        fold_end = (n_repeat_end - 1) * k_fold + k_fold_end * (2 if holdout_cv else 1)
         folds_to_fit = fold_end - fold_start
 
         fold_fit_args_list = []
@@ -776,18 +776,46 @@ class BaggedEnsembleModel(AbstractModel):
             fold_in_set_start = k_fold_start if repeat == n_repeat_start else 0
             fold_in_set_end = k_fold_end if is_last_set else k_fold
 
+            fold_offset = 0
             for fold_in_set in range(fold_in_set_start, fold_in_set_end):  # For each fold
                 fold = fold_in_set + (repeat * k_fold)
-                fold_ctx = dict(
-                    model_name_suffix=f"S{repeat + 1}F{fold_in_set + 1}",  # S5F3 = 3rd fold of the 5th repeat set
-                    fold=kfolds[fold],
-                    is_last_fold=fold == (fold_end - 1),
-                    folds_to_fit=folds_to_fit,
-                    folds_finished=fold - fold_start,
-                    folds_left=fold_end - fold,
-                )
 
-                fold_fit_args_list.append(fold_ctx)
+                if not holdout_cv:
+                    fold_ctx=dict(
+                        model_name_suffix=f"S{repeat+1}F{fold_in_set+1}", # S5F3 = 3rd fold of the 5th repeat set
+                        fold=kfolds[fold],
+                        is_last_fold=fold==(fold_end-1),
+                        folds_to_fit=folds_to_fit,
+                        folds_finished=fold-fold_start,
+                        folds_left=fold_end-fold,
+                        holdout_cv=False,
+                    )
+
+                    fold_fit_args_list.append(fold_ctx)
+                else:
+                    for holdout_cv_i in range(2):
+                        train_index,val_index=kfolds[fold]
+                        val_index_1,val_index_2=val_index[:len(val_index)//2], val_index[
+                        len(val_index)//2:]
+                        if holdout_cv_i == 0:
+                            fold_splits=[train_index, val_index_1, val_index_2]
+                        else:
+                            fold_splits=[train_index, val_index_2, val_index_1]
+                            fold_offset += 1
+                        _fold = fold_in_set + (repeat * k_fold) + fold_offset
+                        fold_ctx=dict(
+                            model_name_suffix=f"S{repeat+1}F{fold_in_set+1}H{holdout_cv_i+1}",
+                            fold=fold_splits,
+                            is_last_fold=_fold==(fold_end-1),
+                            folds_to_fit=folds_to_fit,
+                            folds_finished=_fold-fold_start,
+                            folds_left=fold_end-_fold,
+                            holdout_cv=True,
+                        )
+
+                        fold_fit_args_list.append(fold_ctx)
+
+
             if fold_in_set_end == k_fold:
                 n_repeats_finished += 1
 

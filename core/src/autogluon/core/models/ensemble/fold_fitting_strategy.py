@@ -18,6 +18,8 @@ from autogluon.common.utils.s3_utils import download_s3_folder, s3_path_to_bucke
 from autogluon.common.utils.try_import import try_import_ray
 from autogluon.common.utils.distribute_utils import DistributedContext
 from autogluon.common.utils.log_utils import reset_logger_for_remote_call
+from autogluon.multimodal.configs.pretrain.detection.coco_detection import\
+    val_dataloader
 
 from ...pseudolabeling.pseudolabeling import assert_pseudo_column_match
 from ...ray.resources_calculator import ResourceCalculatorFactory
@@ -228,7 +230,7 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
         self.user_resources_per_job = user_resources_per_job
 
     def _get_fold_time_limit(self, fold_ctx):
-        _, folds_finished, folds_left, folds_to_fit, _, _ = self._get_fold_properties(fold_ctx)
+        _, folds_finished, folds_left, folds_to_fit, _, _, _ = self._get_fold_properties(fold_ctx)
         time_elapsed = time.time() - self.time_start
         if self.time_limit is not None:
             time_left = self.time_limit - time_elapsed
@@ -246,7 +248,11 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
         return time_limit_fold
 
     def _update_bagged_ensemble(self, fold_model, pred_proba, fold_ctx):
-        _, val_index = fold_ctx["fold"]
+
+        if fold_ctx["holdout_cv"]:
+            _, _, val_index = fold_ctx["fold"]
+        else:
+            _, val_index = fold_ctx["fold"]
         model_to_append = fold_model
         if not self.save_folds:
             fold_model.model = None
@@ -261,8 +267,13 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
         self.bagged_ensemble_model._add_child_num_gpus(num_gpus=fold_model.fit_num_gpus)
 
     def _predict_oof(self, fold_model: AbstractModel, fold_ctx) -> Tuple[AbstractModel, ndarray]:
-        fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix = self._get_fold_properties(fold_ctx)
-        _, val_index = fold
+        fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix, holdout_cv = self._get_fold_properties(fold_ctx)
+
+        if holdout_cv:
+            _, _, val_index = fold
+        else:
+            _, val_index = fold
+
         X_val_fold = self.X.iloc[val_index, :]
         y_val_fold = self.y.iloc[val_index]
         # Check to avoid unnecessarily predicting and saving a model
@@ -284,10 +295,10 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
 
     @staticmethod
     def _get_fold_properties(fold_ctx):
-        fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix = [
-            fold_ctx[f] for f in ["fold", "folds_finished", "folds_left", "folds_to_fit", "is_last_fold", "model_name_suffix"]
+        fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix, holdout_cv = [
+            fold_ctx[f] for f in ["fold", "folds_finished", "folds_left", "folds_to_fit", "is_last_fold", "model_name_suffix", "holdout_cv"]
         ]
-        return fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix
+        return fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix, holdout_cv
 
 
 class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
@@ -324,8 +335,13 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
         self._update_bagged_ensemble(fold_model, pred_proba, fold_ctx)
 
     def _fit(self, model_base, time_start_fold, time_limit_fold, fold_ctx, kwargs):
-        fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix = self._get_fold_properties(fold_ctx)
-        train_index, val_index = fold
+        fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix, holdout_cv = self._get_fold_properties(fold_ctx)
+
+        if holdout_cv:
+            train_index,val_index, _ =fold
+        else:
+            train_index, val_index = fold
+
         X_fold, X_val_fold = self.X.iloc[train_index, :], self.X.iloc[val_index, :]
         y_fold, y_val_fold = self.y.iloc[train_index], self.y.iloc[val_index]
         fold_model = copy.deepcopy(model_base)
@@ -386,8 +402,13 @@ def _ray_fit(
     logger.debug(f"executing fold on node {node_id}")
     logger.log(10, "ray worker training")
     time_start_fold = time.time()
-    fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix = FoldFittingStrategy._get_fold_properties(fold_ctx)
-    train_index, val_index = fold
+    fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix, holdout_cv = FoldFittingStrategy._get_fold_properties(fold_ctx)
+
+    if holdout_cv:
+        train_index, val_index, val_index_ho = fold
+    else:
+        train_index, val_index = fold
+
     fold_model = copy.deepcopy(model_base)
     fold_model.name = f"{fold_model.name}{model_name_suffix}"
     fold_model_local_save_path = os.path.join(bagged_ensemble_model_path, fold_model.name)
@@ -413,6 +434,10 @@ def _ray_fit(
     fold_model.fit(X=X_fold, y=y_fold, X_val=X_val_fold, y_val=y_val_fold, time_limit=time_limit_fold, **resources, **kwargs_fold)
     time_train_end_fold = time.time()
     fold_model.fit_time = time_train_end_fold - time_start_fold
+
+    if holdout_cv:
+        X_val_fold, y_val_fold= X.iloc[val_index_ho,:],y.iloc[val_index_ho]
+
     fold_model, pred_proba = _ray_predict_oof(
         fold_model=fold_model,
         X_val_fold=X_val_fold,
@@ -710,8 +735,12 @@ class ParallelFoldFittingStrategy(FoldFittingStrategy):
     ):
         if resources_model is None:
             resources_model = resources
-        fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix = self._get_fold_properties(fold_ctx)
-        train_index, val_index = fold
+        fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix, holdout_cv = self._get_fold_properties(fold_ctx)
+
+        if holdout_cv:
+            train_index, val_index, _  = fold
+        else:
+            train_index, val_index = fold
         fold_ctx_ref = self.ray.put(fold_ctx)
         save_bag_folds = self.save_folds
         kwargs_fold = kwargs.copy()
@@ -743,7 +772,10 @@ class ParallelFoldFittingStrategy(FoldFittingStrategy):
         )
 
     def _update_bagged_ensemble(self, fold_model, pred_proba, time_start_fit, time_end_fit, predict_time, predict_1_time, predict_n_size, fit_num_cpus, fit_num_gpus, fold_ctx):
-        _, val_index = fold_ctx["fold"]
+        if fold_ctx["holdout_cv"]:
+            _, _, val_index = fold_ctx["fold"]
+        else:
+            _, val_index = fold_ctx["fold"]
         self.models.append(fold_model)
         self.oof_pred_proba[val_index] += pred_proba
         self.oof_pred_model_repeats[val_index] += 1
