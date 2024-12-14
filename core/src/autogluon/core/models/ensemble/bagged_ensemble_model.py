@@ -662,7 +662,7 @@ class BaggedEnsembleModel(AbstractModel):
             k_fold_end=k_fold_end,
             n_repeat_start=n_repeat_start,
             n_repeat_end=n_repeats,
-            holdout_cv=os.environ.get("HOLDOUT_CV", False),
+            holdout_cv=os.environ.get("HOLDOUT_CV", False) == "TRUE",
         )
 
         fold_fit_args_list = [dict(fold_ctx=fold_ctx) for fold_ctx in fold_fit_args_list]
