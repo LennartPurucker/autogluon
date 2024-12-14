@@ -662,6 +662,7 @@ class BaggedEnsembleModel(AbstractModel):
             k_fold_end=k_fold_end,
             n_repeat_start=n_repeat_start,
             n_repeat_end=n_repeats,
+            holdout_cv=os.environ.get("HOLDOUT_CV", False),
         )
 
         fold_fit_args_list = [dict(fold_ctx=fold_ctx) for fold_ctx in fold_fit_args_list]
@@ -750,7 +751,7 @@ class BaggedEnsembleModel(AbstractModel):
             self._n_repeats_finished = self._n_repeats - 1
 
     @staticmethod
-    def _generate_fold_configs(*, X, y, cv_splitter, k_fold_start, k_fold_end, n_repeat_start, n_repeat_end, holdout_cv: bool = True) -> (list, int, int):
+    def _generate_fold_configs(*, X, y, cv_splitter, k_fold_start, k_fold_end, n_repeat_start, n_repeat_end, holdout_cv: bool = False) -> (list, int, int):
         """
         Generates fold configs given a cv_splitter, k_fold start-end and n_repeat start-end.
         Fold configs are used by inheritors of FoldFittingStrategy when fitting fold models.
