@@ -24,7 +24,7 @@ from ...pseudolabeling.pseudolabeling import assert_pseudo_column_match
 from ...utils.exceptions import TimeLimitExceeded
 from ...utils.loaders import load_pkl
 from ...utils.savers import save_pkl
-from ...utils.utils import CVSplitter, _compute_fi_with_stddev
+from ...utils.utils import CVSplitter, _compute_fi_with_stddev, generate_train_test_split
 from ..abstract.abstract_model import AbstractModel
 from ..abstract.model_trial import model_trial, skip_hpo
 from .fold_fitting_strategy import (
@@ -663,6 +663,7 @@ class BaggedEnsembleModel(AbstractModel):
             n_repeat_start=n_repeat_start,
             n_repeat_end=n_repeats,
             holdout_cv=os.environ.get("HOLDOUT_CV", False) == "TRUE",
+            problem_type=self.problem_type,
         )
 
         fold_fit_args_list = [dict(fold_ctx=fold_ctx) for fold_ctx in fold_fit_args_list]
@@ -751,7 +752,7 @@ class BaggedEnsembleModel(AbstractModel):
             self._n_repeats_finished = self._n_repeats - 1
 
     @staticmethod
-    def _generate_fold_configs(*, X, y, cv_splitter, k_fold_start, k_fold_end, n_repeat_start, n_repeat_end, holdout_cv: bool = False) -> (list, int, int):
+    def _generate_fold_configs(*, X, y, cv_splitter, k_fold_start, k_fold_end, n_repeat_start, n_repeat_end, holdout_cv: bool = False, problem_type: str = None) -> (list, int, int):
         """
         Generates fold configs given a cv_splitter, k_fold start-end and n_repeat start-end.
         Fold configs are used by inheritors of FoldFittingStrategy when fitting fold models.
@@ -796,8 +797,12 @@ class BaggedEnsembleModel(AbstractModel):
                 else:
                     for holdout_cv_i in range(2):
                         train_index,val_index=kfolds[fold]
-                        val_index_1,val_index_2=val_index[:len(val_index)//2], val_index[
-                        len(val_index)//2:]
+                        val_index_1,val_index_2,_,_=generate_train_test_split(
+                            pd.DataFrame(val_index),y.iloc[val_index],test_size=0.5,
+                            problem_type=problem_type
+                        )
+                        val_index_1 = val_index_1.to_numpy().flatten()
+                        val_index_2 = val_index_2.to_numpy().flatten()
                         if holdout_cv_i == 0:
                             fold_splits=[train_index, val_index_1, val_index_2]
                         else:
