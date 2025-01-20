@@ -538,6 +538,15 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                 curves["val"] = val_curves
             if test_dataset is not None:
                 curves["test"] = test_curves
+
+            # Read learning curves from LOO.
+            if es_oof_flag:
+                val_loo_es = es_wrapper_oof.early_stop_oof_score_over_time
+                metric_name = self.stopping_metric.name
+                if use_curve_metric_error:
+                    val_loo_es = [self.stopping_metric.convert_score_to_error(s) for s in val_loo_es]
+                curves["val_loo_es"] = {metric_name: val_loo_es}
+
             self.save_learning_curves(metrics=metric_names, curves=curves)
 
         # revert back to best model
