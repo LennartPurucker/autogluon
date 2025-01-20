@@ -150,6 +150,7 @@ class ESOutput:
 @dataclass
 class ESOOFOutput:
     early_stop: bool
+    score: float
 
 
 # TODO: Should be able to make a really nice unit test of this class
@@ -227,6 +228,7 @@ class ESWrapperOOF:
         self.best_val_metric_oof = None
         self.early_stop_oof = None
         self.early_stopping_wrapper_val_lst = None
+        self.early_stop_oof_score_over_time = None
 
     def _init_wrappers(self, y: np.ndarray, y_pred_proba: np.ndarray):
         self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
@@ -235,6 +237,7 @@ class ESWrapperOOF:
         self.best_val_metric_oof = np.full(self.len_val, -np.inf)  # higher = better
         self.early_stop_oof = np.zeros(self.len_val, dtype=np.bool_)
         self.early_stopping_wrapper_val_lst = [copy.deepcopy(self._es_template) for _ in range(self.len_val)]
+        self.early_stop_oof_score_over_time = []
 
     # FIXME: docstring
     # FIXME: y_pred_proba isn't the right name. But what should it be? It is the correct prediction format for stacker inputs.
@@ -260,4 +263,9 @@ class ESWrapperOOF:
                 if es_output.is_best_or_tie:
                     self.best_val_metric_oof[i] = self.early_stopping_wrapper_val_lst[i].best_score
                     self.y_pred_proba_val_best_oof[i] = y_pred_proba[i]
-        return ESOOFOutput(early_stop=early_stop)
+
+
+        es_oof_score = self._es_template.score_func(y, self.y_pred_proba_val_best_oof)
+        self.early_stop_oof_score_over_time.append(es_oof_score)
+
+        return ESOOFOutput(early_stop=early_stop, score=es_oof_score)
