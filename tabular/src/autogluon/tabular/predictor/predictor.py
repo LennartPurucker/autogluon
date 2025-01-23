@@ -2811,17 +2811,16 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
                     "model": curve_data,
                 }
         """
+
+
+
         metadata = self.info()
-        metadata = {
-            "problem_type": metadata["problem_type"],
-            "eval_metric": metadata["eval_metric"],
-            "num_classes": metadata["num_classes"],
-            "num_rows_train": metadata["num_rows_train"],
-            "num_rows_val": metadata["num_rows_val"],
-            "num_rows_test": metadata["num_rows_test"],
-            "models": {
+
+        if metadata["num_bag_folds"] == 0:
+            models = {
                 model: {
                     "model_name": info["name"],
+                    "child_model_name": None,
                     "model_type": info["model_type"],
                     "stopping_metric": info["stopping_metric"],
                     "hyperparameters": info["hyperparameters"],
@@ -2833,13 +2832,44 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
                 }
                 for model, info in metadata["model_info"].items()
                 if info.get("has_learning_curves", False)
-            },
+            }
+        else:
+            models = {
+                (bag_model, model): {
+                    "model_name": bag_info["name"],
+                    "child_model_name": model,
+                    "model_type": info["model_type"],
+                    "stopping_metric": info["stopping_metric"],
+                    "hyperparameters": info["hyperparameters"],
+                    "hyperparameters_fit": info["hyperparameters_fit"],
+                    "ag_args_fit": info["ag_args_fit"],
+                    "predict_time": info["predict_time"],
+                    "fit_time": info["fit_time"],
+                    "val_score": info["val_score"],
+                }
+                for bag_model, bag_info in metadata["model_info"].items() for model, info in bag_info["children_info"].items()
+                if info.get("has_learning_curves", False)
+            }
+
+        metadata = {
+            "problem_type": metadata["problem_type"],
+            "eval_metric": metadata["eval_metric"],
+            "num_classes": metadata["num_classes"],
+            "num_rows_train": metadata["num_rows_train"],
+            "num_rows_val": metadata["num_rows_val"],
+            "num_rows_test": metadata["num_rows_test"],
+            "models": models,
         }
 
         model_data = {}
         for model in metadata["models"].values():
             model_name = model["model_name"]
-            model_data[model_name] = self._trainer.get_model_learning_curves(model=model_name)
+            child_model_name = model.get("child_model_name", None)
+            if child_model_name is not None:
+                _model_name = (model_name, child_model_name)
+            else:
+                _model_name = model_name
+            model_data[_model_name] = self._trainer.get_model_learning_curves(model=model_name, child_model=child_model_name)
 
         return metadata, model_data
 

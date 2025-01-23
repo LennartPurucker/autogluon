@@ -1389,8 +1389,9 @@ class AbstractModel:
         learning_curves : List
             Loaded learning curve data.
         """
-        if not cls._get_class_tags().get("supports_learning_curves", False):
-            raise AssertionError("Attempted to load learning curves from model without learning curve support")
+        # FIXME: cls tags do not work for bagging
+        # if not cls._get_class_tags().get("supports_learning_curves", False):
+        #     raise AssertionError("Attempted to load learning curves from model without learning curve support")
 
         file = os.path.join(path, cls.learning_curve_file_name)
 
