@@ -98,9 +98,25 @@ class DefaultLearner(AbstractTabularLearner):
             num_bag_folds = len(X[self.groups].unique())
         X_og = None if infer_limit_batch_size is None else X
         logger.log(20, "Preprocessing data ...")
+
+        if 'ag.unbiased_val_data_for_curves' in trainer_fit_kwargs["core_kwargs"]["ag_args_fit"]:
+            unbiased_val_data_for_curves = trainer_fit_kwargs["core_kwargs"]["ag_args_fit"][
+                "ag.unbiased_val_data_for_curves"]
+            X_unbiased_val = unbiased_val_data_for_curves["X"]
+            X_unbiased_val[self.label] = unbiased_val_data_for_curves["y"]
+            _, _, _, _, X_unbiased_val, y_unbiased_val, _, _, _, _ = self.general_data_processing(
+                X=X, X_val=None, X_test=X_unbiased_val, X_unlabeled=None, holdout_frac=holdout_frac,
+                num_bag_folds=num_bag_folds
+            )
+            trainer_fit_kwargs["core_kwargs"]["ag_args_fit"]["ag.unbiased_val_data_for_curves"] = {
+                "X": X_unbiased_val,
+                "y": y_unbiased_val
+            }
+
         X, y, X_val, y_val, X_test, y_test, X_unlabeled, holdout_frac, num_bag_folds, groups = self.general_data_processing(
             X=X, X_val=X_val, X_test=X_test, X_unlabeled=X_unlabeled, holdout_frac=holdout_frac, num_bag_folds=num_bag_folds
         )
+
         if X_og is not None:
             infer_limit = self._update_infer_limit(X=X_og, infer_limit_batch_size=infer_limit_batch_size, infer_limit=infer_limit)
 

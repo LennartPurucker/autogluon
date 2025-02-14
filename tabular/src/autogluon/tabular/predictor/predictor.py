@@ -5323,6 +5323,7 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
         # metrics defaults to self.eval_metric if not specified
         metrics = None
         use_error = False
+        unbiased_val_data = None
 
         if type(learning_curves) == dict:
             if "metrics" in learning_curves:
@@ -5351,9 +5352,13 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
             if "use_error" in learning_curves:
                 use_error = learning_curves["use_error"]
 
+            if "unbiased_val_data" in learning_curves:
+                unbiased_val_data = learning_curves["unbiased_val_data"]
+
         params = {
             "ag.generate_curves": True,
             "ag.use_error_for_curve_metrics": use_error,
+            "ag.unbiased_val_data_for_curves": unbiased_val_data,
         }
 
         if metrics:

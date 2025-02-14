@@ -4,7 +4,7 @@ import copy
 
 import numpy as np
 from dataclasses import dataclass
-
+from autogluon.core.constants import PROBLEM_TYPES_CLASSIFICATION, BINARY
 
 class AbstractES:
     """
@@ -219,9 +219,13 @@ class ESWrapperOOF:
         self,
         es: AbstractES,
         score_func: callable,
+        problem_type,
         best_is_later_if_tie: bool = True,
+        use_ts: bool = False,
     ):
-        self._es_template = ESWrapper(es=es, score_func=score_func, best_is_later_if_tie=best_is_later_if_tie)
+        self.es = es
+        self.score_func=score_func
+        self.best_is_later_if_tie=best_is_later_if_tie
         self.score_func = score_func
         self.y_pred_proba_val_best_oof = None
         self.len_val = None
@@ -229,15 +233,32 @@ class ESWrapperOOF:
         self.early_stop_oof = None
         self.early_stopping_wrapper_val_lst = None
         self.early_stop_oof_score_over_time = None
+        self.early_stop_oof_score_over_time_avg = None
+        self.problem_type = problem_type
+        self.use_ts = use_ts
 
     def _init_wrappers(self, y: np.ndarray, y_pred_proba: np.ndarray):
-        self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
+        self._es_template = ESWrapper(es=self.es, score_func=self.score_func, best_is_later_if_tie=self.best_is_later_if_tie)
         self.y_pred_proba_shape = y_pred_proba.shape
         self.len_val = len(y)
-        self.best_val_metric_oof = np.full(self.len_val, -np.inf)  # higher = better
-        self.early_stop_oof = np.zeros(self.len_val, dtype=np.bool_)
-        self.early_stopping_wrapper_val_lst: list[ESWrapper] = [copy.deepcopy(self._es_template) for _ in range(self.len_val)]
         self.early_stop_oof_score_over_time = []
+        self.early_stop_oof_score_over_time_avg = []
+        self.early_stop_custom_score_over_time = []
+
+        self.early_stop_score_over_time = []
+
+        from sklearn.model_selection import RepeatedKFold
+
+        self.n_repeats = 5
+        self.n_folds = 10
+        self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
+        self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for i in range(self.n_repeats)]
+        self.spliter = RepeatedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
+        self.n_splits = self.spliter.get_n_splits()
+        self.early_stopping_wrapper_val_lst: list[ESWrapper] = [ESWrapper(es=self.es, score_func=self.score_func, best_is_later_if_tie=self.best_is_later_if_tie) for _ in range(self.n_splits)]
+        self.best_val_metric_oof = [[] for i in range(self.n_splits)]  # higher = better
+        self.early_stop_oof = np.zeros(self.n_splits, dtype=np.bool_)
+
 
     @property
     def round_to_use(self) -> np.ndarray:
@@ -248,28 +269,74 @@ class ESWrapperOOF:
     def update(self, y: np.ndarray, y_score: np.ndarray, cur_round: int, y_pred_proba: np.ndarray) -> ESOOFOutput:
         if self.y_pred_proba_val_best_oof is None:
             self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
+
         early_stop = True
-        for i in range(self.len_val):
+        for i, (val_idx, oof_idx) in enumerate(self.spliter.split(list(range(self.len_val)))):
             if not self.early_stop_oof[i]:
-                y_i = np.delete(y, i, axis=0)
-                y_score_i = np.delete(y_score, i, axis=0)
+                y_i = y[val_idx]
+                y_score_i = y_score[val_idx]
 
                 es_output = self.early_stopping_wrapper_val_lst[i].update(
                     y=y_i,
                     y_score=y_score_i,
                     cur_round=cur_round,
                 )
-
                 self.early_stop_oof[i] = es_output.early_stop
                 if not es_output.early_stop:
                     early_stop = False
                 # update best validation
                 if es_output.is_best_or_tie:
-                    self.best_val_metric_oof[i] = self.early_stopping_wrapper_val_lst[i].best_score
-                    self.y_pred_proba_val_best_oof[i] = y_pred_proba[i]
+                    self.best_val_metric_oof[i].append(self.early_stopping_wrapper_val_lst[i].best_score)
+                    self.y_pred_proba_val_best_oof_list[int((i - (i % self.n_folds)) / self.n_folds)][oof_idx] = y_pred_proba[oof_idx]
 
+        if len(self.y_pred_proba_val_best_oof_list) == 1:
+            self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof_list[0]
+        else:
+            self.y_pred_proba_val_best_oof = np.mean(self.y_pred_proba_val_best_oof_list, axis=0)
 
+        # if early_stop:
+        #     # Final corrections
+        #     es_oof_score = self.score_func(y, self.y_pred_proba_val_best_oof)
+        #     # es_oof_score =  float(np.mean(self.best_val_metric_oof))
+        #     self.early_stop_oof_score_over_time.append(float(es_oof_score))
+        #
         es_oof_score = self._es_template.score_func(y, self.y_pred_proba_val_best_oof)
         self.early_stop_oof_score_over_time.append(es_oof_score)
+        self.early_stop_oof_score_over_time_avg.append(np.mean([i[-1] for i in self.best_val_metric_oof]))
+        # print(f"round: {cur_round}, es_oof_score: {es_oof_score}, no-update% {no_updated_count/self.len_val}, {np.mean(self.early_stop_oof)}")
+
+        # # Custom new version of LOO ES
+        # from scipy.stats import mannwhitneyu
+        # y_pred_proba_val_best_oof_custom = copy.deepcopy(y_pred_proba)
+        # true_history = np.array(val_metric_over_time)
+        # true_history = true_history[:np.argmax(true_history) + 1]
+        # for i in range(self.len_val):
+        #     loo_history = self.best_val_metric_oof[i]
+        #     _, pvalue = mannwhitneyu(loo_history, true_history)
+        #
+        #     if pvalue >= 0.5: # 50 % confidence
+        #         # no significant difference
+        #         y_pred_proba_val_best_oof_custom[i] = best_y_pred_proba_val[i]
+        #     else:
+        #         # significant difference
+        #         y_pred_proba_val_best_oof_custom[i] = self.y_pred_proba_val_best_oof[i]
+        # self.early_stop_custom_score_over_time.append(self._es_template.score_func(y, y_pred_proba_val_best_oof_custom))
+
+        if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
+            from probmetrics.calibrators import get_calibrator
+            is_binary = self.problem_type == BINARY
+
+            if is_binary:
+                from autogluon.core.data.label_cleaner import LabelCleanerMulticlassToBinary
+                y_pred_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(self.y_pred_proba_val_best_oof) # self.y_pred_proba_val_best_oof
+            calib = get_calibrator('temp-scaling', calibrate_with_mixture=False)
+            calib.fit(y_pred_proba, y)
+            y_pred_proba_val_best_oof_custom = calib.predict_proba(y_pred_proba)
+            if is_binary:
+                y_pred_proba_val_best_oof_custom = y_pred_proba_val_best_oof_custom[:, 1]
+            self.early_stop_custom_score_over_time.append(self._es_template.score_func(y, y_pred_proba_val_best_oof_custom))
+
+            if self.use_ts:
+                self.y_pred_proba_val_best_oof = y_pred_proba
 
         return ESOOFOutput(early_stop=early_stop, score=es_oof_score)

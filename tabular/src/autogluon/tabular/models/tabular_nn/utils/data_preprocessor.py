@@ -24,7 +24,7 @@ def create_preprocessor(
         transformers.append(("continuous", continuous_transformer, continuous_features))
     if skewed_features:
         power_transformer = Pipeline(
-            steps=[("imputer", SimpleImputer(strategy=impute_strategy)), ("quantile", QuantileTransformer(output_distribution="normal"))]
+            steps=[("imputer", SimpleImputer(strategy=impute_strategy)), ("quantile", QuantileTransformer(output_distribution="normal", random_state=42))]
         )  # Or output_distribution = 'uniform'
         transformers.append(("skewed", power_transformer, skewed_features))
     if onehot_features:

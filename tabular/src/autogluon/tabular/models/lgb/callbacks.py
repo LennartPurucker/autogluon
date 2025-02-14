@@ -84,6 +84,7 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
                 es=copy.deepcopy(self.es_template),
                 score_func=stopping_metric,
                 best_is_later_if_tie=False,
+                problem_type=problem_type,
             )
         else:
             self.early_stop_oof = True

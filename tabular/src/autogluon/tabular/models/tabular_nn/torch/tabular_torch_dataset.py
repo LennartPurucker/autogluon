@@ -81,6 +81,7 @@ class TabularTorchDataset(torch.utils.data.IterableDataset):
         self.vecfeature_col_map = {}
         self.feature_dataindex_map = {}
         self.num_classes = None
+        self.train_seed = np.random.RandomState(42)
 
         # numerical data
         if len(self.feature_groups["vector"]) > 0:
@@ -138,8 +139,20 @@ class TabularTorchDataset(torch.utils.data.IterableDataset):
         Returns a tuple containing (vector_features, embed_features, label).
         The length of the tuple depends on `has_vector_features` and `has_embed_feautures` attribute.
         """
+
+        if self.is_test:
+            torch.manual_seed(42)
+            random.seed(42)
+            np.random.seed(42)
+        else:
+            train_seed = self.train_seed.randint(0, int(np.iinfo(np.int32).max))
+            torch.manual_seed(train_seed)
+            random.seed(train_seed)
+            np.random.seed(train_seed)
+
+        shuffle = self.shuffle and (not self.is_test)
         idxarray = np.arange(self.num_examples)
-        if self.shuffle:
+        if shuffle:  # not self.is_test
             np.random.shuffle(idxarray)
         indices = range(0, self.num_examples, self.batch_size)
         for idx_start in indices:
@@ -150,7 +163,7 @@ class TabularTorchDataset(torch.utils.data.IterableDataset):
 
             # Shuffle the index array to reorder the output sequence.
             # This should be consistent across different features (vector, embed and label).
-            if self.shuffle:
+            if shuffle:
                 idx = idxarray[idx]
 
             # Generate a tuple that contains (vector_features, embed_features, label).
@@ -252,6 +265,7 @@ class TabularTorchDataset(torch.utils.data.IterableDataset):
             else:
                 np.random.seed(np.random.get_state()[1][0] + worker_id)
 
+        self.is_test = is_test
         self.batch_size = batch_size
         self.shuffle = False if is_test else True
         self.drop_last = False if is_test else True

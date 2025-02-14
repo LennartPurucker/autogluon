@@ -251,7 +251,7 @@ class CatBoostModel(AbstractModel):
         self.model.fit(X, **fit_final_kwargs)
 
         if es_oof_flag:
-            self.y_pred_proba_val_oof_ = self._reconstruct_es_oof(X_val=X_val, y_val=y_val, early_stopping_rounds=early_stopping_rounds)
+            self.y_pred_proba_val_oof_ = self._reconstruct_es_oof(X_val=X_val, y_val=y_val, early_stopping_rounds=early_stopping_rounds, use_ts=ag_params.get("use_ts", False))
 
             optimal_ntree = self.model.best_iteration_ + 1
             if self.model.tree_count_ != optimal_ntree:
@@ -261,7 +261,7 @@ class CatBoostModel(AbstractModel):
 
     # FIXME: https://github.com/catboost/catboost/issues/2802
     # FIXME: `es` should use same logic as callback
-    def _reconstruct_es_oof(self, X_val, y_val: pd.Series, early_stopping_rounds: tuple) -> np.ndarray:
+    def _reconstruct_es_oof(self, X_val, y_val: pd.Series, early_stopping_rounds: tuple, use_ts) -> np.ndarray:
         if self.problem_type in [BINARY, MULTICLASS, SOFTCLASS]:
             staged_predictions = self.model.staged_predict_proba(X_val)
         else:
@@ -273,7 +273,7 @@ class CatBoostModel(AbstractModel):
         else:
             es = early_stopping_rounds[0](**early_stopping_rounds[1])
 
-        es_wrapper_oof = ESWrapperOOF(es=es, score_func=self.stopping_metric, best_is_later_if_tie=False)
+        es_wrapper_oof = ESWrapperOOF(es=es, score_func=self.stopping_metric, best_is_later_if_tie=False, problem_type=self.problem_type, use_ts=use_ts)
 
         y_val = y_val.to_numpy()
         # FIXME: This is imperfect, as it doesn't include iterations that would have still been running without early stopping for LOO.
@@ -362,7 +362,7 @@ class CatBoostModel(AbstractModel):
         return get_early_stopping_rounds(num_rows_train=num_rows_train, strategy=strategy)
 
     def _ag_params(self) -> set:
-        return {"early_stop", "es_oof"}
+        return {"early_stop", "es_oof", "use_ts"}
 
     def _validate_fit_memory_usage(self, mem_error_threshold: float = 1, mem_warning_threshold: float = 0.75, mem_size_threshold: int = 1e9, **kwargs):
         return super()._validate_fit_memory_usage(

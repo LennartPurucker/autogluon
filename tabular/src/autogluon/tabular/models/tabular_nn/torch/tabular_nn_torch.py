@@ -310,18 +310,32 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                 early_stopping_method = self._get_early_stopping_strategy(num_rows_train=len(train_dataset))
             es_wrapper = ESWrapper(es=copy.deepcopy(early_stopping_method), score_func=score_method, best_is_later_if_tie=True)
             if es_oof_flag:
-                es_wrapper_oof = ESWrapperOOF(es=copy.deepcopy(early_stopping_method), score_func=score_method, best_is_later_if_tie=True)
+                es_wrapper_oof = ESWrapperOOF(es=copy.deepcopy(early_stopping_method), score_func=score_method, best_is_later_if_tie=True, problem_type=self.problem_type, use_ts=ag_params.get("use_ts", False))
 
         generate_curves = ag_params.get("generate_curves", False)
 
         if generate_curves:
             scorers = ag_params.get("curve_metrics", [self.eval_metric])
             use_curve_metric_error = ag_params.get("use_error_for_curve_metrics", False)
+            unbiased_val_data = ag_params.get("unbiased_val_data_for_curves", None)
             metric_names = [scorer.name for scorer in scorers]
 
             train_curves = {metric.name: [] for metric in scorers}
             val_curves = {metric.name: [] for metric in scorers}
             test_curves = {metric.name: [] for metric in scorers}
+            unbiased_val_curves = {metric.name: [] for metric in scorers}
+
+            if unbiased_val_data is not None:
+                unbiased_val_data = self._generate_dataset(X=unbiased_val_data["X"], y=unbiased_val_data["y"])
+
+            # import hashlib
+            # buffer  = io.BytesIO()
+            # np.savez_compressed(buffer, *unbiased_val_data.data_list)
+            # print("Unbiased Val data", hashlib.md5(buffer.getvalue()).hexdigest())
+            # buffer  = io.BytesIO()
+            # np.savez_compressed(buffer, *val_dataset.data_list)
+            # print("Val data", hashlib.md5(buffer.getvalue()).hexdigest())
+            # exit()
 
             # make copy of train_dataset to avoid interfering with train_dataloader
             curve_train_dataset = deepcopy(train_dataset)
@@ -335,6 +349,13 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                     y_test = y_test.flatten()
             else:
                 y_test = None
+
+            if unbiased_val_data is not None:
+                y_unbiased_val = unbiased_val_data.get_labels()
+                if y_unbiased_val.ndim == 2 and y_unbiased_val.shape[1] == 1:
+                    y_unbiased_val = y_unbiased_val.flatten()
+            else:
+                y_unbiased_val = None
 
         if val_dataset is not None:
             y_val = val_dataset.get_labels()
@@ -443,15 +464,18 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                     train_curves=train_curves,
                     val_curves=val_curves,
                     test_curves=test_curves,
+                    unbiased_val_curves=unbiased_val_curves,
                     scorers=scorers,
                     best_epoch=best_epoch,
                     use_curve_metric_error=use_curve_metric_error,
                     train_dataset=curve_train_dataset,
                     val_dataset=val_dataset,
                     test_dataset=test_dataset,
+                    unbiased_val_data=unbiased_val_data,
                     y_train=y_train,
                     y_val=y_val,
                     y_test=y_test,
+                    y_unbiased_val=y_unbiased_val,
                 )
 
                 if stop:
@@ -532,12 +556,23 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
         if epoch == 0:
             raise AssertionError("0 epochs trained!")
 
+        # revert back to best model
+        if val_dataset is not None:
+            logger.log(15, f"Best model found on Epoch {best_epoch} (Update {best_val_update}). Val {self.stopping_metric.name}: {best_val_metric}")
+            if io_buffer is not None:
+                io_buffer.seek(0)
+                self.model = torch.load(io_buffer, weights_only=False)  # nosec B614
+        else:
+            logger.log(15, f"Best model found on Epoch {best_epoch} (Update {best_val_update}).")
+
         if generate_curves:
             curves = {"train": train_curves}
             if val_dataset is not None:
                 curves["val"] = val_curves
             if test_dataset is not None:
                 curves["test"] = test_curves
+            if unbiased_val_data is not None:
+                curves["unbiased_val"] = unbiased_val_curves
 
             # Read learning curves from LOO.
             if es_oof_flag:
@@ -547,18 +582,22 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                     val_loo_es = [self.stopping_metric.convert_score_to_error(s) for s in val_loo_es]
                 curves["val_loo_es"] = {metric_name: val_loo_es}
 
+                val_loo_es_avg = es_wrapper_oof.early_stop_oof_score_over_time_avg
+                if use_curve_metric_error:
+                    val_loo_es_avg = [self.stopping_metric.convert_score_to_error(s) for s in val_loo_es_avg]
+                curves["val_loo_es_avg"] = {metric_name: val_loo_es_avg}
+
+                custom_es = es_wrapper_oof.early_stop_custom_score_over_time
+                if use_curve_metric_error:
+                    custom_es = [self.stopping_metric.convert_score_to_error(s) for s in custom_es]
+                curves["custom_es"] = {metric_name: custom_es}
+
             self.save_learning_curves(metrics=metric_names, curves=curves)
 
-        # revert back to best model
-        if val_dataset is not None:
-            logger.log(15, f"Best model found on Epoch {best_epoch} (Update {best_val_update}). Val {self.stopping_metric.name}: {best_val_metric}")
-            if io_buffer is not None:
-                io_buffer.seek(0)
-                self.model = torch.load(io_buffer, weights_only=False)  # nosec B614
-        else:
-            logger.log(15, f"Best model found on Epoch {best_epoch} (Update {best_val_update}).")
+
         self.params_trained["batch_size"] = batch_size
         self.params_trained["num_epochs"] = best_epoch
+
 
     def _get_early_stopping_strategy(self, num_rows_train: int):
         ag_early_stop = self._get_ag_params().get("early_stop", "default")
@@ -586,15 +625,18 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
         train_curves: dict,
         val_curves: dict,
         test_curves: dict,
+        unbiased_val_curves,
         scorers: list[Scorer],
         best_epoch: int,
         use_curve_metric_error: bool,
         train_dataset: "TabularTorchDataset",
         val_dataset: "TabularTorchDataset",
         test_dataset: "TabularTorchDataset",
+        unbiased_val_data,
         y_train: np.ndarray,
         y_val: np.ndarray,
         y_test: np.ndarray,
+            y_unbiased_val
     ) -> bool:
         """
         Extends learning curve dictionaries across all metrics listed in scorers by one epoch.
@@ -607,11 +649,13 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
         train_metrics = []
         val_metrics = []
         test_metrics = []
+        unbiased_val_metrics = []
 
         for metric in scorers:
             train_metrics.append(self.score(X=train_dataset, y=y_train, metric=metric, _reset_threads=False))
             val_metrics += [self.score(X=val_dataset, y=y_val, metric=metric, _reset_threads=False)] if val_dataset is not None else []
             test_metrics += [self.score(X=test_dataset, y=y_test, metric=metric, _reset_threads=False)] if test_dataset is not None else []
+            unbiased_val_metrics += [self.score(X=unbiased_val_data, y=y_unbiased_val, metric=metric, _reset_threads=False)] if unbiased_val_data is not None else []
 
             if use_curve_metric_error:
                 train_metrics[-1] = metric.convert_score_to_error(train_metrics[-1])
@@ -619,11 +663,14 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                     val_metrics[-1] = metric.convert_score_to_error(val_metrics[-1])
                 if test_dataset is not None:
                     test_metrics[-1] = metric.convert_score_to_error(test_metrics[-1])
+                if unbiased_val_data is not None:
+                    unbiased_val_metrics[-1] = metric.convert_score_to_error(unbiased_val_metrics[-1])
 
             if (
                 not self._assert_valid_metric(metric=train_metrics[-1], best_epoch=best_epoch)
                 or (val_dataset is not None and not self._assert_valid_metric(metric=val_metrics[-1], best_epoch=best_epoch))
                 or (test_dataset is not None and not self._assert_valid_metric(metric=test_metrics[-1], best_epoch=best_epoch))
+                or (unbiased_val_data is not None and not self._assert_valid_metric(metric=unbiased_val_metrics[-1], best_epoch=best_epoch))
             ):
                 return True
 
@@ -632,6 +679,7 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
             train_curves[metric.name].append(float(train_metrics[i]))
             val_curves[metric.name] += [float(val_metrics[i])] if val_dataset is not None else []
             test_curves[metric.name] += [float(test_metrics[i])] if test_dataset is not None else []
+            unbiased_val_curves[metric.name] += [float(unbiased_val_metrics[i])] if unbiased_val_data is not None else []
 
         return False
 
@@ -681,7 +729,6 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
 
     def _predict_tabular_data(self, new_data, process=True):
         from .tabular_torch_dataset import TabularTorchDataset
-
         if process:
             new_data = self._process_test_data(new_data)
         if not isinstance(new_data, TabularTorchDataset):
@@ -948,7 +995,7 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
         return TabularNeuralNetTorchNativeCompiler
 
     def _ag_params(self) -> set:
-        return {"early_stop", "generate_curves", "curve_metrics", "use_error_for_curve_metrics", "es_oof"}
+        return {"early_stop", "generate_curves", "curve_metrics", "use_error_for_curve_metrics", "es_oof", "unbiased_val_data_for_curves", "use_ts"}
 
     def _get_input_types(self, batch_size=None):
         input_types = []

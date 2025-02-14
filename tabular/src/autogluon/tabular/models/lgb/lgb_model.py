@@ -206,6 +206,7 @@ class LGBModel(AbstractModel):
                     y_val=y_val_clean,
                     stopping_metric=self.stopping_metric,
                     problem_type=self.problem_type,
+                    use_ts=ag_params.get("use_ts", False),
                 )
             else:
                 extra_es_callback_kwargs = dict()
@@ -563,7 +564,7 @@ class LGBModel(AbstractModel):
         return self._features_internal_list
 
     def _ag_params(self) -> set:
-        return {"early_stop", "generate_curves", "curve_metrics", "use_error_for_curve_metrics", "es_oof"}
+        return {"early_stop", "generate_curves", "curve_metrics", "use_error_for_curve_metrics", "es_oof", "use_ts"}
 
     @classmethod
     def _class_tags(cls):
