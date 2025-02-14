@@ -11,7 +11,6 @@ from autogluon_benchmark.tasks.task_wrapper import OpenMLTaskWrapper
 def verify_es_oof_correctness(
     train_data: pd.DataFrame,
     val_data: pd.DataFrame,
-    task: OpenMLTaskWrapper,
     model_key: str,
     model_hyperparameters: dict | None = None,
     eval_metric: str | None = None,
@@ -42,7 +41,7 @@ def verify_es_oof_correctness(
         model_hyperparameters = {}
 
     init_kwargs = dict(
-        label=task.label,
+        label="class",
         eval_metric=eval_metric,
         verbosity=verbosity,
         learner_kwargs=dict(fit_transform_val=fit_transform_val),
@@ -171,20 +170,30 @@ def verify_es_oof_correctness(
 
 
 if __name__ == '__main__':
-    task = OpenMLTaskWrapper.from_name(dataset="adult")
+    import os
+    from autogluon.core.utils import generate_train_test_split_combined
+    if not os.path.exists("train.csv") or not os.path.exists("test.csv"):
+        train_data = pd.read_csv(
+            "https://autogluon.s3.amazonaws.com/datasets/Inc/train.csv",
+        )
+        test_data = pd.read_csv("https://autogluon.s3.amazonaws.com/datasets/Inc/test.csv")
+        train_data.to_csv("train.csv", index=False)
+        test_data.to_csv("test.csv", index=False)
+    else:
+        train_data = pd.read_csv("train.csv")
+        test_data = pd.read_csv("test.csv")
 
-    train_data, test_data = task.get_train_test_split_combined(
-        fold=0,
-        train_size=100,
-    )
+    data = pd.concat([train_data, test_data], ignore_index=True)
+
 
     from autogluon.core.utils import generate_train_test_split_combined
 
-    label = task.label
-    problem_type = task.problem_type
+    label = "class"
+    problem_type = "binary"
     eval_metric = "log_loss"
+    train_data, _ = generate_train_test_split_combined(data, label=label, problem_type=problem_type, train_size=100, random_state=2)
 
-    train_data, val_data = generate_train_test_split_combined(train_data, label=label, problem_type=problem_type, test_size=20)
+    train_data, val_data = generate_train_test_split_combined(train_data, label=label, problem_type=problem_type, test_size=20, random_state=3)
 
     model_types = [
         "GBM",
@@ -219,7 +228,6 @@ if __name__ == '__main__':
         verify_es_oof_correctness(
             train_data=train_data,
             val_data=val_data,
-            task=task,
             model_key=model_type,
             model_hyperparameters=model_hyperparameters_dict.get(model_type, None),
             eval_metric=eval_metric,
