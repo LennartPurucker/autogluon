@@ -37,6 +37,7 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
         y_val: np.ndarray | None = None,
         stopping_metric: Callable | None = None,
         problem_type: str | None = None,
+        use_ts: bool = False,
     ):
         if min_delta != 0.0:
             raise ValueError(f"Non-zero min_delta is not implemented in this callback.")
@@ -85,6 +86,7 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
                 score_func=stopping_metric,
                 best_is_later_if_tie=False,
                 problem_type=problem_type,
+                use_ts=use_ts,
             )
         else:
             self.early_stop_oof = True
