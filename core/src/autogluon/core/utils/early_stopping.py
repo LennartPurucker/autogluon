@@ -5,7 +5,7 @@ import copy
 import numpy as np
 from dataclasses import dataclass
 from autogluon.core.constants import PROBLEM_TYPES_CLASSIFICATION, BINARY
-from sklearn.model_selection import RepeatedKFold
+from sklearn.model_selection import RepeatedKFold, RepeatedStratifiedKFold
 
 
 class AbstractES:
@@ -255,7 +255,10 @@ class ESWrapperOOF:
         self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
         # self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof.astype(np.float64) # TODO this might be needed
         self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for i in range(self.n_repeats)]
-        self.spliter = RepeatedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
+        if self.problem_type in PROBLEM_TYPES_CLASSIFICATION and self.use_ts:
+            self.spliter = RepeatedStratifiedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
+        else:
+            self.spliter = RepeatedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
         self.n_splits = self.spliter.get_n_splits()
         self.early_stopping_wrapper_val_lst: list[ESWrapper] = [ESWrapper(es=self.es, score_func=self.score_func, best_is_later_if_tie=self.best_is_later_if_tie) for _ in range(self.n_splits)]
         self.best_val_metric_oof = [[] for i in range(self.n_splits)]  # higher = better
@@ -273,7 +276,7 @@ class ESWrapperOOF:
             self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
 
         early_stop = True
-        for i, (val_idx, oof_idx) in enumerate(self.spliter.split(list(range(self.len_val)))):
+        for i, (val_idx, oof_idx) in enumerate(self.spliter.split(list(range(self.len_val)), y=y)):
             if not self.early_stop_oof[i]:
                 y_i = y[val_idx]
                 y_score_i = y_score[val_idx]
@@ -325,22 +328,22 @@ class ESWrapperOOF:
         #         y_pred_proba_val_best_oof_custom[i] = self.y_pred_proba_val_best_oof[i]
         # self.early_stop_custom_score_over_time.append(self._es_template.score_func(y, y_pred_proba_val_best_oof_custom))
 
-        if (self.problem_type in PROBLEM_TYPES_CLASSIFICATION) and ((self.use_ts and early_stop) or self.debug):
-            from probmetrics.calibrators import get_calibrator
-            is_binary = self.problem_type == BINARY
-
-            if is_binary:
-                from autogluon.core.data.label_cleaner import LabelCleanerMulticlassToBinary
-                y_pred_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(self.y_pred_proba_val_best_oof) # self.y_pred_proba_val_best_oof
-            calib = get_calibrator('temp-scaling', calibrate_with_mixture=False)
-            calib.fit(y_pred_proba, y)
-            y_pred_proba_val_best_oof_custom = calib.predict_proba(y_pred_proba)
-            if is_binary:
-                y_pred_proba_val_best_oof_custom = y_pred_proba_val_best_oof_custom[:, 1]
-            self.early_stop_custom_score_over_time.append(self._es_template.score_func(y, y_pred_proba_val_best_oof_custom))
-
-            if self.use_ts:
-                self.y_pred_proba_val_best_oof = y_pred_proba_val_best_oof_custom
+        # if (self.problem_type in PROBLEM_TYPES_CLASSIFICATION) and ((self.use_ts and early_stop) or self.debug):
+        #     from probmetrics.calibrators import get_calibrator
+        #     is_binary = self.problem_type == BINARY
+        #
+        #     if is_binary:
+        #         from autogluon.core.data.label_cleaner import LabelCleanerMulticlassToBinary
+        #         y_pred_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(self.y_pred_proba_val_best_oof) # self.y_pred_proba_val_best_oof
+        #     calib = get_calibrator('temp-scaling', calibrate_with_mixture=False)
+        #     calib.fit(y_pred_proba, y)
+        #     y_pred_proba_val_best_oof_custom = calib.predict_proba(y_pred_proba)
+        #     if is_binary:
+        #         y_pred_proba_val_best_oof_custom = y_pred_proba_val_best_oof_custom[:, 1]
+        #     self.early_stop_custom_score_over_time.append(self._es_template.score_func(y, y_pred_proba_val_best_oof_custom))
+        #
+        #     if self.use_ts:
+        #         self.y_pred_proba_val_best_oof = y_pred_proba_val_best_oof_custom
 
         if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
             # Fix precision errors

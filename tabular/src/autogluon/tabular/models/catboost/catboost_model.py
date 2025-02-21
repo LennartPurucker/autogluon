@@ -255,7 +255,7 @@ class CatBoostModel(AbstractModel):
 
             optimal_ntree = self.model.best_iteration_ + 1
             if self.model.tree_count_ != optimal_ntree:
-                self.model.shrink(optimal_ntree)
+                self.model.shrink(optimal_ntree) # FIXME: does not work for gorw policy unequal to SymmetricTree
 
         self.params_trained["iterations"] = self.model.tree_count_
 
