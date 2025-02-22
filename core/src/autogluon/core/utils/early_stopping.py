@@ -257,7 +257,7 @@ class ESWrapperOOF:
             case "None":
                 self.n_repeats = 5
                 self.n_folds = 10
-
+                
                 if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
                     _, counts = np.unique(y, return_counts=True)
                     if min(counts) < self.n_folds:
@@ -268,11 +268,12 @@ class ESWrapperOOF:
 
                 self.spliter = CVSplitter(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0,
                                           stratify=self.problem_type in PROBLEM_TYPES_CLASSIFICATION)
+                self.splits = self.spliter.split(list(range(self.len_val)), y=y)
 
             case "25r2f":
                 self.n_repeats = 25
                 self.n_folds = 2
-
+                
                 if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
                     _, counts = np.unique(y, return_counts=True)
                     if min(counts) == 1:
@@ -281,6 +282,8 @@ class ESWrapperOOF:
 
                 self.spliter = CVSplitter(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0,
                                           stratify=self.problem_type in PROBLEM_TYPES_CLASSIFICATION)
+                self.splits = self.spliter.split(list(range(self.len_val)), y=y)
+
             case "50sT0.67":
                 self.n_repeats = 50
                 self.n_folds = 1
@@ -288,13 +291,15 @@ class ESWrapperOOF:
                     self.spliter = StratifiedShuffleSplit(n_splits=self.n_repeats, test_size=0.67, random_state=0)
                 else:
                     self.spliter = ShuffleSplit(n_splits=self.n_repeats, test_size=0.67, random_state=0)
+                self.splits = list(self.spliter.split(list(range(self.len_val)), y=y))
             case _:
                 raise ValueError(f"Unknown use_ts: {self.use_ts}")
+
 
         self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
         # self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof.astype(np.float64) # TODO this might be needed
         self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for i in range(self.n_repeats)]
-        self.n_splits = self.spliter.get_n_splits()
+        self.n_splits = len(self.splits)
         self.early_stopping_wrapper_val_lst: list[ESWrapper] = [ESWrapper(es=self.es, score_func=self.score_func, best_is_later_if_tie=self.best_is_later_if_tie) for _ in range(self.n_splits)]
         self.best_val_metric_oof = [[] for i in range(self.n_splits)]  # higher = better
         self.early_stop_oof = np.zeros(self.n_splits, dtype=np.bool_)
@@ -311,7 +316,7 @@ class ESWrapperOOF:
             self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
 
         early_stop = True
-        for i, (val_idx, oof_idx) in enumerate(self.spliter.split(list(range(self.len_val)), y=y)):
+        for i, (val_idx, oof_idx) in enumerate(self.splits):
             if not self.early_stop_oof[i]:
                 y_i = y[val_idx]
                 y_score_i = y_score[val_idx]
