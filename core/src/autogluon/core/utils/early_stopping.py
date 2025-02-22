@@ -5,7 +5,7 @@ import copy
 import numpy as np
 from dataclasses import dataclass
 from autogluon.core.constants import PROBLEM_TYPES_CLASSIFICATION, BINARY
-from sklearn.model_selection import RepeatedKFold, RepeatedStratifiedKFold
+from sklearn.model_selection import RepeatedKFold, RepeatedStratifiedKFold, StratifiedShuffleSplit, ShuffleSplit
 
 
 class AbstractES:
@@ -222,7 +222,7 @@ class ESWrapperOOF:
         score_func: callable,
         problem_type,
         best_is_later_if_tie: bool = True,
-        use_ts: bool = False,
+        use_ts: str = "None",
     ):
         self.es = es
         self.score_func=score_func
@@ -250,15 +250,38 @@ class ESWrapperOOF:
         self.early_stop_score_over_time = []
 
 
-        self.n_repeats = 5
-        self.n_folds = 10
+
+
+        match self.use_ts:
+            case "None":
+                self.n_repeats = 5
+                self.n_folds = 10
+                if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
+                    self.spliter = RepeatedStratifiedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats,
+                                                           random_state=0)
+                else:
+                    self.spliter = RepeatedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
+            case "25r2f":
+                self.n_repeats = 25
+                self.n_folds = 2
+                if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
+                    self.spliter = RepeatedStratifiedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats,
+                                                           random_state=0)
+                else:
+                    self.spliter = RepeatedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
+            case "50sT0.67":
+                self.n_repeats = 50
+                self.n_folds = 1
+                if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
+                    self.spliter = StratifiedShuffleSplit(n_splits=self.n_repeats, test_size=0.67, random_state=0)
+                else:
+                    self.spliter = ShuffleSplit(n_splits=self.n_repeats, test_size=0.67, random_state=0)
+            case _:
+                raise ValueError(f"Unknown use_ts: {self.use_ts}")
+
         self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
         # self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof.astype(np.float64) # TODO this might be needed
         self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for i in range(self.n_repeats)]
-        if self.problem_type in PROBLEM_TYPES_CLASSIFICATION and self.use_ts:
-            self.spliter = RepeatedStratifiedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
-        else:
-            self.spliter = RepeatedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
         self.n_splits = self.spliter.get_n_splits()
         self.early_stopping_wrapper_val_lst: list[ESWrapper] = [ESWrapper(es=self.es, score_func=self.score_func, best_is_later_if_tie=self.best_is_later_if_tie) for _ in range(self.n_splits)]
         self.best_val_metric_oof = [[] for i in range(self.n_splits)]  # higher = better
