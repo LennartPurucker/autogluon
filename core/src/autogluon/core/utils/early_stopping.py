@@ -6,6 +6,7 @@ import numpy as np
 from dataclasses import dataclass
 from autogluon.core.constants import PROBLEM_TYPES_CLASSIFICATION, BINARY
 from sklearn.model_selection import RepeatedKFold, RepeatedStratifiedKFold, StratifiedShuffleSplit, ShuffleSplit
+from autogluon.core.utils.utils import CVSplitter
 
 
 class AbstractES:
@@ -256,19 +257,30 @@ class ESWrapperOOF:
             case "None":
                 self.n_repeats = 5
                 self.n_folds = 10
+
                 if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
-                    self.spliter = RepeatedStratifiedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats,
-                                                           random_state=0)
-                else:
-                    self.spliter = RepeatedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
+                    _, counts = np.unique(y, return_counts=True)
+                    if min(counts) < self.n_folds:
+                        if min(counts) == 1:
+                            print("Cannot perform 1-fold cross-validation, as there is only 1 sample in a class.")
+                            exit(-1)  # try to error out inside of AutoGluon, this should work (?)
+                        self.n_folds = min(counts)
+
+                self.spliter = CVSplitter(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0,
+                                          stratify=self.problem_type in PROBLEM_TYPES_CLASSIFICATION)
+
             case "25r2f":
                 self.n_repeats = 25
                 self.n_folds = 2
+
                 if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
-                    self.spliter = RepeatedStratifiedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats,
-                                                           random_state=0)
-                else:
-                    self.spliter = RepeatedKFold(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0)
+                    _, counts = np.unique(y, return_counts=True)
+                    if min(counts) == 1:
+                        print("Cannot perform 1-fold cross-validation, as there is only 1 sample in a class.")
+                        exit(-1)  # try to error out inside of AutoGluon, this should work (?)
+
+                self.spliter = CVSplitter(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0,
+                                          stratify=self.problem_type in PROBLEM_TYPES_CLASSIFICATION)
             case "50sT0.67":
                 self.n_repeats = 50
                 self.n_folds = 1
