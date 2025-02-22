@@ -257,7 +257,7 @@ class ESWrapperOOF:
             case "None":
                 self.n_repeats = 5
                 self.n_folds = 10
-                
+
                 if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
                     _, counts = np.unique(y, return_counts=True)
                     if min(counts) < self.n_folds:
@@ -269,11 +269,12 @@ class ESWrapperOOF:
                 self.spliter = CVSplitter(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0,
                                           stratify=self.problem_type in PROBLEM_TYPES_CLASSIFICATION)
                 self.splits = self.spliter.split(list(range(self.len_val)), y=y)
+                self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for i in range(self.n_repeats)]
 
             case "25r2f":
                 self.n_repeats = 25
                 self.n_folds = 2
-                
+
                 if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
                     _, counts = np.unique(y, return_counts=True)
                     if min(counts) == 1:
@@ -283,22 +284,41 @@ class ESWrapperOOF:
                 self.spliter = CVSplitter(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0,
                                           stratify=self.problem_type in PROBLEM_TYPES_CLASSIFICATION)
                 self.splits = self.spliter.split(list(range(self.len_val)), y=y)
+                self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for i in range(self.n_repeats)]
 
             case "50sT0.67":
                 self.n_repeats = 50
-                self.n_folds = 1
+                self.n_folds = 1  # higher nuber means more overlap of writing to OOF
+                # n_folds * n_repeats = n_splits given to spliter below
+                n_splits = 50
+
                 if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
-                    self.spliter = StratifiedShuffleSplit(n_splits=self.n_repeats, test_size=0.67, random_state=0)
+                    self.spliter = StratifiedShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
                 else:
-                    self.spliter = ShuffleSplit(n_splits=self.n_repeats, test_size=0.67, random_state=0)
+                    self.spliter = ShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
                 self.splits = list(self.spliter.split(list(range(self.len_val)), y=y))
+                self.y_pred_proba_val_best_oof_list = [np.full_like(y_pred_proba, np.nan) for _ in range(self.n_repeats)]
+
+            case "50sT0.67Mix":
+                self.n_repeats = 25
+                self.n_folds = 2
+                n_splits = 50
+
+                if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
+                    self.spliter = StratifiedShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
+                else:
+                    self.spliter = ShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
+                self.splits = list(self.spliter.split(list(range(self.len_val)), y=y))
+
+                self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for _ in range(self.n_repeats)]
+
             case _:
                 raise ValueError(f"Unknown use_ts: {self.use_ts}")
 
 
         self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
+        self.y_pred_proba_val_best_oof_fallback = copy.deepcopy(y_pred_proba)
         # self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof.astype(np.float64) # TODO this might be needed
-        self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for i in range(self.n_repeats)]
         self.n_splits = len(self.splits)
         self.early_stopping_wrapper_val_lst: list[ESWrapper] = [ESWrapper(es=self.es, score_func=self.score_func, best_is_later_if_tie=self.best_is_later_if_tie) for _ in range(self.n_splits)]
         self.best_val_metric_oof = [[] for i in range(self.n_splits)]  # higher = better
@@ -337,7 +357,10 @@ class ESWrapperOOF:
         if len(self.y_pred_proba_val_best_oof_list) == 1:
             self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof_list[0]
         else:
-            self.y_pred_proba_val_best_oof = np.mean(self.y_pred_proba_val_best_oof_list, axis=0)
+            self.y_pred_proba_val_best_oof = np.nanmean(self.y_pred_proba_val_best_oof_list, axis=0)
+
+            if np.isnan(self.y_pred_proba_val_best_oof).any():
+                self.y_pred_proba_val_best_oof  = np.where(np.isnan(self.y_pred_proba_val_best_oof), self.y_pred_proba_val_best_oof_fallback, self.y_pred_proba_val_best_oof )
 
         # if early_stop:
         #     # Final corrections
