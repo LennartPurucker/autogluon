@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 
 import numpy as np
-from dataclasses import dataclass
-from autogluon.core.constants import PROBLEM_TYPES_CLASSIFICATION, BINARY
-from sklearn.model_selection import RepeatedKFold, RepeatedStratifiedKFold, StratifiedShuffleSplit, ShuffleSplit
+import pandas as pd
+from autogluon.core.constants import BINARY, PROBLEM_TYPES_CLASSIFICATION
+from autogluon.core.utils import generate_train_test_split
 from autogluon.core.utils.utils import CVSplitter
 
 
 class AbstractES:
-    """
-    Abstract early stopping class
-    """
+    """Abstract early stopping class."""
 
     def update(self, cur_round, is_best: bool = False) -> bool:
         raise NotImplementedError
@@ -22,9 +21,7 @@ class AbstractES:
 
 
 class NoES(AbstractES):
-    """
-    Dummy early stopping method that never triggers early stopping
-    """
+    """Dummy early stopping method that never triggers early stopping."""
 
     def update(self, cur_round: int, is_best: bool = False) -> bool:
         return self.early_stop(cur_round, is_best=is_best)
@@ -35,7 +32,7 @@ class NoES(AbstractES):
 
 class SimpleES(AbstractES):
     """
-    Implements early stopping with fixed patience
+    Implements early stopping with fixed patience.
 
     Parameters
     ----------
@@ -63,7 +60,7 @@ class SimpleES(AbstractES):
 # TODO: Incorporate score, rolling window
 class AdaptiveES(AbstractES):
     """
-    Implements early stopping with adaptive patience
+    Implements early stopping with adaptive patience.
 
     Patience follows the formula `patience = ax + b`, where `a = adaptive_rate`, `x = round` and `b = adaptive_offset`.
     Patience is only updated when a new `best_round` is observed.
@@ -99,7 +96,13 @@ class AdaptiveES(AbstractES):
         Effectively, patience = self.best_round * self.adaptive_rate + self.adaptive_offset, bound by min_patience and max_patience
     """
 
-    def __init__(self, adaptive_rate: float = 0.3, adaptive_offset: int = 10, min_patience: int | None = None, max_patience: int | None = None):
+    def __init__(
+        self,
+        adaptive_rate: float = 0.3,
+        adaptive_offset: int = 10,
+        min_patience: int | None = None,
+        max_patience: int | None = None,
+    ):
         self.adaptive_rate = adaptive_rate
         self.adaptive_offset = adaptive_offset
         self.min_patience = min_patience
@@ -128,7 +131,9 @@ class AdaptiveES(AbstractES):
         return cur_round - self.best_round >= self.patience
 
     def _update_patience(self, best_round: int) -> int:
-        patience = round(self.adaptive_rate * best_round + self.adaptive_offset)  # ax + b
+        patience = round(
+            self.adaptive_rate * best_round + self.adaptive_offset,
+        )  # ax + b
         if self.min_patience is not None:
             patience = max(self.min_patience, patience)
         if self.max_patience is not None:
@@ -189,19 +194,15 @@ class ESWrapper:
         if is_best:
             self.best_score = score
         early_stop = self.es.update(cur_round=cur_round, is_best=is_best)
-        es_output = ESOutput(
+        return ESOutput(
             early_stop=early_stop,
             is_best=is_best,
             is_best_or_tie=is_best_or_tie,
             score=score,
         )
-        return es_output
 
     def _check_is_best(self, score: float) -> tuple[bool, bool]:
-        if self.best_score is None:
-            is_best = True
-            is_best_or_tie = True
-        elif score > self.best_score:
+        if self.best_score is None or score > self.best_score:
             is_best = True
             is_best_or_tie = True
         elif score == self.best_score:
@@ -226,8 +227,8 @@ class ESWrapperOOF:
         use_ts: str = "None",
     ):
         self.es = es
-        self.score_func=score_func
-        self.best_is_later_if_tie=best_is_later_if_tie
+        self.score_func = score_func
+        self.best_is_later_if_tie = best_is_later_if_tie
         self.score_func = score_func
         self.y_pred_proba_val_best_oof = None
         self.len_val = None
@@ -239,9 +240,14 @@ class ESWrapperOOF:
         self.problem_type = problem_type
         self.use_ts = use_ts
         self.debug = False
+        self.y_pred_proba_val_best_oof_fallback = None
 
     def _init_wrappers(self, y: np.ndarray, y_pred_proba: np.ndarray):
-        self._es_template = ESWrapper(es=self.es, score_func=self.score_func, best_is_later_if_tie=self.best_is_later_if_tie)
+        self._es_template = ESWrapper(
+            es=self.es,
+            score_func=self.score_func,
+            best_is_later_if_tie=self.best_is_later_if_tie,
+        )
         self.y_pred_proba_shape = y_pred_proba.shape
         self.len_val = len(y)
         self.early_stop_oof_score_over_time = []
@@ -250,80 +256,141 @@ class ESWrapperOOF:
 
         self.early_stop_score_over_time = []
 
-
-
-
-        match self.use_ts:
-            case "None":
-                self.n_repeats = 5
-                self.n_folds = 10
-
-                if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
-                    _, counts = np.unique(y, return_counts=True)
-                    if min(counts) < self.n_folds:
-                        if min(counts) == 1:
-                            print("Cannot perform 1-fold cross-validation, as there is only 1 sample in a class.")
-                            exit(-1)  # try to error out inside of AutoGluon, this should work (?)
-                        self.n_folds = min(counts)
-
-                self.spliter = CVSplitter(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0,
-                                          stratify=self.problem_type in PROBLEM_TYPES_CLASSIFICATION)
-                self.splits = self.spliter.split(list(range(self.len_val)), y=y)
-                self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for i in range(self.n_repeats)]
-
-            case "25r2f":
-                self.n_repeats = 25
-                self.n_folds = 2
-
-                if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
-                    _, counts = np.unique(y, return_counts=True)
-                    if min(counts) == 1:
-                        print("Cannot perform 1-fold cross-validation, as there is only 1 sample in a class.")
-                        exit(-1)  # try to error out inside of AutoGluon, this should work (?)
-
-                self.spliter = CVSplitter(n_splits=self.n_folds, n_repeats=self.n_repeats, random_state=0,
-                                          stratify=self.problem_type in PROBLEM_TYPES_CLASSIFICATION)
-                self.splits = self.spliter.split(list(range(self.len_val)), y=y)
-                self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for i in range(self.n_repeats)]
-
-            case "50sT0.67":
-                self.n_repeats = 50
-                self.n_folds = 1  # higher nuber means more overlap of writing to OOF
-                # n_folds * n_repeats = n_splits given to spliter below
-                n_splits = 50
-
-                if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
-                    self.spliter = StratifiedShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
-                else:
-                    self.spliter = ShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
-                self.splits = list(self.spliter.split(list(range(self.len_val)), y=y))
-                self.y_pred_proba_val_best_oof_list = [np.full_like(y_pred_proba, np.nan) for _ in range(self.n_repeats)]
-
-            case "50sT0.67Mix":
-                self.n_repeats = 25
-                self.n_folds = 2
-                n_splits = 50
-
-                if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
-                    self.spliter = StratifiedShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
-                else:
-                    self.spliter = ShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
-                self.splits = list(self.spliter.split(list(range(self.len_val)), y=y))
-
-                self.y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for _ in range(self.n_repeats)]
-
-            case _:
-                raise ValueError(f"Unknown use_ts: {self.use_ts}")
-
+        (
+            self.n_folds,
+            self.n_repeats,
+            self.splits,
+            self.y_pred_proba_val_best_oof_list,
+        ) = self.create_loo_val_splits(
+            y=y,
+            y_pred_proba=y_pred_proba,
+            problem_type=self.problem_type,
+            use_ts=self.use_ts,
+        )
 
         self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
         self.y_pred_proba_val_best_oof_fallback = copy.deepcopy(y_pred_proba)
         # self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof.astype(np.float64) # TODO this might be needed
         self.n_splits = len(self.splits)
-        self.early_stopping_wrapper_val_lst: list[ESWrapper] = [ESWrapper(es=self.es, score_func=self.score_func, best_is_later_if_tie=self.best_is_later_if_tie) for _ in range(self.n_splits)]
+        self.early_stopping_wrapper_val_lst: list[ESWrapper] = [
+            ESWrapper(
+                es=self.es,
+                score_func=self.score_func,
+                best_is_later_if_tie=self.best_is_later_if_tie,
+            )
+            for _ in range(self.n_splits)
+        ]
         self.best_val_metric_oof = [[] for i in range(self.n_splits)]  # higher = better
         self.early_stop_oof = np.zeros(self.n_splits, dtype=np.bool_)
 
+    @staticmethod
+    def create_loo_val_splits(*, y, y_pred_proba, problem_type, use_ts):
+        fake_x = pd.Series(list(range(len(y))))
+        y = y.copy()
+        n_folds_default = 10
+
+        # Duplicate samples as needed to ensure that each class has at least 2 samples,
+        #   or N-splits many splits for use_ts == "None".
+        if problem_type in PROBLEM_TYPES_CLASSIFICATION:
+            # Fix rare-fold classes
+            cls_counts = y.value_counts()
+            cls_counts = cls_counts[cls_counts > 0]
+            cls_counts_less_than_n_splits = cls_counts[cls_counts < n_folds_default]
+            if len(cls_counts_less_than_n_splits) > 0:
+                cls_counts_rare_folds = set(cls_counts_less_than_n_splits.index)
+
+                for cls in cls_counts_rare_folds:
+                    cls_indices = (
+                        fake_x[y == cls]
+                        .sample(
+                            n=n_folds_default - sum(y == cls),
+                            replace=True,
+                            random_state=0,
+                        )
+                        .tolist()
+                    )
+                    fake_x = pd.concat(
+                        [fake_x, pd.Series(cls_indices)], ignore_index=True
+                    )
+                    y = pd.concat([y, y[cls_indices]], ignore_index=True)
+
+                # Re-compute for next if statement
+                cls_counts = y.value_counts()
+                cls_counts = cls_counts[cls_counts > 0]
+
+            cls_counts_rare = cls_counts[cls_counts < 2]
+            if len(cls_counts_rare) > 0:
+                cls_counts_rare_val = set(cls_counts_rare.index)
+                rare_indices = fake_x[y.isin(cls_counts_rare_val)].tolist()
+                fake_x = pd.concat(
+                    [fake_x, pd.Series([rare_indices])], ignore_index=True
+                )
+                y = pd.concat([y, y[rare_indices]], ignore_index=True)
+
+        match use_ts:
+            case "None" | "25r2f":
+                n_repeats = 5 if use_ts == "None" else 25
+                n_folds = n_folds_default if use_ts == "None" else 2
+
+                spliter = CVSplitter(
+                    n_splits=n_folds,
+                    n_repeats=n_repeats,
+                    random_state=0,
+                    stratify=problem_type in PROBLEM_TYPES_CLASSIFICATION,
+                )
+                splits = [
+                    [
+                        fake_x[train_index].astype(int).tolist(),
+                        fake_x[test_index].astype(int).tolist(),
+                    ]
+                    for train_index, test_index in spliter.split(fake_x, y=y)
+                ]
+                y_pred_proba_val_best_oof_list = [
+                    copy.deepcopy(y_pred_proba) for i in range(n_repeats)
+                ]
+            case "50sT0.67":
+                n_repeats = 50
+                n_folds = 1  # higher nuber means more overlap of writing to OOF
+                n_splits = 50  # n_folds * n_repeats = n_splits given to spliter below
+
+                splits = []
+                for i in range(n_splits):
+                    train_index, val_index, _, _ = generate_train_test_split(
+                        X=fake_x.to_frame(),
+                        y=y,
+                        problem_type=problem_type,
+                        test_size=0.67,
+                        random_state=0 + i,
+                    )
+                    splits.append(
+                        (
+                            train_index.iloc[:, 0].astype(int).tolist(),
+                            val_index.iloc[:, 0].astype(int).tolist(),
+                        ),
+                    )
+
+                y_pred_proba_val_best_oof_list = [
+                    np.full(y_pred_proba.shape, np.nan) for _ in range(n_repeats)
+                ]
+
+            # weird, somehow sometimes very well working idea
+            # case "50sT0.67Mix":
+            #     n_repeats = 25
+            #     n_folds = 2
+            #     n_splits = 50
+            #
+            #     if problem_type in PROBLEM_TYPES_CLASSIFICATION:
+            #         spliter = StratifiedShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
+            #     else:
+            #         spliter = ShuffleSplit(n_splits=n_splits, test_size=0.67, random_state=0)
+            #     splits = list(spliter.split(list(range(len_val)), y=y))
+            #
+            #     y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for _ in range(n_repeats)]
+
+            case _:
+                raise ValueError(f"Unknown use_ts: {use_ts}")
+
+        return n_folds, n_repeats, splits, y_pred_proba_val_best_oof_list
 
     @property
     def round_to_use(self) -> np.ndarray:
@@ -331,7 +398,13 @@ class ESWrapperOOF:
 
     # FIXME: docstring
     # FIXME: y_pred_proba isn't the right name. But what should it be? It is the correct prediction format for stacker inputs.
-    def update(self, y: np.ndarray, y_score: np.ndarray, cur_round: int, y_pred_proba: np.ndarray) -> ESOOFOutput:
+    def update(
+        self,
+        y: np.ndarray,
+        y_score: np.ndarray,
+        cur_round: int,
+        y_pred_proba: np.ndarray,
+    ) -> ESOOFOutput:
         if self.y_pred_proba_val_best_oof is None:
             self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
 
@@ -351,16 +424,31 @@ class ESWrapperOOF:
                     early_stop = False
                 # update best validation
                 if es_output.is_best_or_tie:
-                    self.best_val_metric_oof[i].append(self.early_stopping_wrapper_val_lst[i].best_score)
-                    self.y_pred_proba_val_best_oof_list[int((i - (i % self.n_folds)) / self.n_folds)][oof_idx] = y_pred_proba[oof_idx]
+                    self.best_val_metric_oof[i].append(
+                        self.early_stopping_wrapper_val_lst[i].best_score,
+                    )
+                    self.y_pred_proba_val_best_oof_list[
+                        int((i - (i % self.n_folds)) / self.n_folds)
+                    ][oof_idx] = y_pred_proba[oof_idx]
+
+                    # Set fallback to last-stopped predictions (likely it would be better to use the best val epoch instead)
+                    self.y_pred_proba_val_best_oof_fallback = y_pred_proba
 
         if len(self.y_pred_proba_val_best_oof_list) == 1:
             self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof_list[0]
         else:
-            self.y_pred_proba_val_best_oof = np.nanmean(self.y_pred_proba_val_best_oof_list, axis=0)
+            self.y_pred_proba_val_best_oof = np.nanmean(
+                self.y_pred_proba_val_best_oof_list,
+                axis=0,
+            )
 
+            # This should almost surely never happen.
             if np.isnan(self.y_pred_proba_val_best_oof).any():
-                self.y_pred_proba_val_best_oof  = np.where(np.isnan(self.y_pred_proba_val_best_oof), self.y_pred_proba_val_best_oof_fallback, self.y_pred_proba_val_best_oof )
+                self.y_pred_proba_val_best_oof = np.where(
+                    np.isnan(self.y_pred_proba_val_best_oof),
+                    self.y_pred_proba_val_best_oof_fallback,
+                    self.y_pred_proba_val_best_oof,
+                )
 
         # if early_stop:
         #     # Final corrections
@@ -369,9 +457,14 @@ class ESWrapperOOF:
         #     self.early_stop_oof_score_over_time.append(float(es_oof_score))
         #
         if self.debug:
-            es_oof_score = self._es_template.score_func(y, self.y_pred_proba_val_best_oof)
+            es_oof_score = self._es_template.score_func(
+                y,
+                self.y_pred_proba_val_best_oof,
+            )
             self.early_stop_oof_score_over_time.append(es_oof_score)
-            self.early_stop_oof_score_over_time_avg.append(np.mean([i[-1] for i in self.best_val_metric_oof]))
+            self.early_stop_oof_score_over_time_avg.append(
+                np.mean([i[-1] for i in self.best_val_metric_oof]),
+            )
         # print(f"round: {cur_round}, es_oof_score: {es_oof_score}, no-update% {no_updated_count/self.len_val}, {np.mean(self.early_stop_oof)}")
 
         # # Custom new version of LOO ES
@@ -411,16 +504,24 @@ class ESWrapperOOF:
         if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
             # Fix precision errors
             if early_stop:
-
                 is_binary = self.problem_type == BINARY
 
                 if is_binary:
-                    from autogluon.core.data.label_cleaner import LabelCleanerMulticlassToBinary
-                    y_pred_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(self.y_pred_proba_val_best_oof) # self.y_pred_proba_val_best_oof
+                    from autogluon.core.data.label_cleaner import (
+                        LabelCleanerMulticlassToBinary,
+                    )
+
+                    y_pred_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(
+                        self.y_pred_proba_val_best_oof,
+                    )  # self.y_pred_proba_val_best_oof
                 else:
                     y_pred_proba = self.y_pred_proba_val_best_oof
 
-                if (not np.allclose(y_pred_proba.sum(axis=1), 1, rtol=np.sqrt(np.finfo(y_pred_proba.dtype).eps))):
+                if not np.allclose(
+                    y_pred_proba.sum(axis=1),
+                    1,
+                    rtol=np.sqrt(np.finfo(y_pred_proba.dtype).eps),
+                ):
                     y_pred_proba /= np.sum(y_pred_proba, axis=1)[:, np.newaxis]
 
                 if is_binary:
