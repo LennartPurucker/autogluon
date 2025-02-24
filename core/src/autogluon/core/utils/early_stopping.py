@@ -262,6 +262,7 @@ class ESWrapperOOF:
                 self.es.adaptive_offset = 5
                 self.es.adaptive_rate = 0.15
                 self.es.patience = 5
+                self.es.max_patience = 20
             case "default":
                 pass
             case _:
