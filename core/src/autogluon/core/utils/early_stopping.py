@@ -284,13 +284,17 @@ class ESWrapperOOF:
         self.early_stop_oof = np.zeros(self.n_splits, dtype=np.bool_)
 
     @staticmethod
-    def create_loo_val_splits(*, y, y_pred_proba, problem_type, use_ts):
+    def create_loo_val_splits(*, y: pd.Series | np.ndarray, y_pred_proba: np.ndarray, problem_type: str, use_ts: str):
         fake_x = pd.Series(list(range(len(y))))
-        y = y.copy()
+        y = y.copy() if isinstance(y, pd.Series) else pd.Series(y)
         n_folds_default = 10
 
         # Duplicate samples as needed to ensure that each class has at least 2 samples,
         #   or N-splits many splits for use_ts == "None".
+        # -> Duplication makes OOF biased but for these edge cases it is acceptable as
+        #   the fallback would be to use the (more) biased default OOF predictions.
+        #   This might be less biased because only the duplicates samples are biased when
+        #   computing the metric.
         if problem_type in PROBLEM_TYPES_CLASSIFICATION:
             # Fix rare-fold classes
             cls_counts = y.value_counts()
