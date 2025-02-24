@@ -582,10 +582,10 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                     val_loo_es = [self.stopping_metric.convert_score_to_error(s) for s in val_loo_es]
                 curves["val_loo_es"] = {metric_name: val_loo_es}
 
-                val_loo_es_avg = es_wrapper_oof.early_stop_oof_score_over_time_avg
-                if use_curve_metric_error:
-                    val_loo_es_avg = [self.stopping_metric.convert_score_to_error(s) for s in val_loo_es_avg]
-                curves["val_loo_es_avg"] = {metric_name: val_loo_es_avg}
+                # val_loo_es_avg = es_wrapper_oof.early_stop_oof_score_over_time_avg
+                # if use_curve_metric_error:
+                #     val_loo_es_avg = [self.stopping_metric.convert_score_to_error(s) for s in val_loo_es_avg]
+                # curves["val_loo_es_avg"] = {metric_name: val_loo_es_avg}
 
                 # custom_es = es_wrapper_oof.early_stop_custom_score_over_time
                 # if use_curve_metric_error:

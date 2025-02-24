@@ -224,38 +224,55 @@ class ESWrapperOOF:
         score_func: callable,
         problem_type,
         best_is_later_if_tie: bool = True,
-        use_ts: str = "None",
+        use_ts=None,
     ):
+        if use_ts is None:
+            use_ts = {
+                "split_method": "None",
+                "es_method": "default",
+            }
+
+        self.split_method = use_ts["split_method"]
+        self.es_method = use_ts["es_method"]
+
         self.es = es
         self.score_func = score_func
         self.best_is_later_if_tie = best_is_later_if_tie
         self.score_func = score_func
         self.y_pred_proba_val_best_oof = None
-        self.len_val = None
-        self.best_val_metric_oof = None
+        # self.best_val_metric_oof = None
         self.early_stop_oof = None
         self.early_stopping_wrapper_val_lst = None
         self.early_stop_oof_score_over_time = None
         self.early_stop_oof_score_over_time_avg = None
         self.problem_type = problem_type
         self.use_ts = use_ts
-        self.debug = False
         self.y_pred_proba_val_best_oof_fallback = None
 
+
+        # For qualitative analysis
+        self.debug = False
+
+
+
     def _init_wrappers(self, y: np.ndarray, y_pred_proba: np.ndarray):
-        self._es_template = ESWrapper(
-            es=self.es,
-            score_func=self.score_func,
-            best_is_later_if_tie=self.best_is_later_if_tie,
-        )
+
+        match self.es_method:
+            case "fast":
+                self.es.adaptive_offset = 5
+                self.es.adaptive_rate = 0.15
+                self.es.patience = 5
+            case "default":
+                pass
+            case _:
+                raise ValueError(f"Unknown es_method: {self.es_method}")
+
         self.y_pred_proba_shape = y_pred_proba.shape
-        self.len_val = len(y)
         self.early_stop_oof_score_over_time = []
         self.early_stop_oof_score_over_time_avg = []
         self.early_stop_custom_score_over_time = []
 
         self.early_stop_score_over_time = []
-
         (
             self.n_folds,
             self.n_repeats,
@@ -265,12 +282,11 @@ class ESWrapperOOF:
             y=y,
             y_pred_proba=y_pred_proba,
             problem_type=self.problem_type,
-            use_ts=self.use_ts,
+            split_method=self.split_method,
         )
 
         self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
         self.y_pred_proba_val_best_oof_fallback = copy.deepcopy(y_pred_proba)
-        # self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof.astype(np.float64) # TODO this might be needed
         self.n_splits = len(self.splits)
         self.early_stopping_wrapper_val_lst: list[ESWrapper] = [
             ESWrapper(
@@ -280,11 +296,11 @@ class ESWrapperOOF:
             )
             for _ in range(self.n_splits)
         ]
-        self.best_val_metric_oof = [[] for i in range(self.n_splits)]  # higher = better
+        # self.best_val_metric_oof = [[] for i in range(self.n_splits)]  # higher = better
         self.early_stop_oof = np.zeros(self.n_splits, dtype=np.bool_)
 
     @staticmethod
-    def create_loo_val_splits(*, y: pd.Series | np.ndarray, y_pred_proba: np.ndarray, problem_type: str, use_ts: str):
+    def create_loo_val_splits(*, y: pd.Series | np.ndarray, y_pred_proba: np.ndarray, problem_type: str, split_method: str):
         fake_x = pd.Series(list(range(len(y))))
         y = y.copy() if isinstance(y, pd.Series) else pd.Series(y)
         n_folds_default = 10
@@ -331,10 +347,10 @@ class ESWrapperOOF:
                 )
                 y = pd.concat([y, y[rare_indices]], ignore_index=True)
 
-        match use_ts:
+        match split_method:
             case "None" | "25r2f":
-                n_repeats = 5 if use_ts == "None" else 25
-                n_folds = n_folds_default if use_ts == "None" else 2
+                n_repeats = 5 if split_method == "None" else 25
+                n_folds = n_folds_default if split_method == "None" else 2
 
                 spliter = CVSplitter(
                     n_splits=n_folds,
@@ -392,7 +408,7 @@ class ESWrapperOOF:
             #     y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for _ in range(n_repeats)]
 
             case _:
-                raise ValueError(f"Unknown use_ts: {use_ts}")
+                raise ValueError(f"Unknown use_ts: {split_method}")
 
         return n_folds, n_repeats, splits, y_pred_proba_val_best_oof_list
 
@@ -413,8 +429,9 @@ class ESWrapperOOF:
             self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
 
         early_stop = True
-        for i, (val_idx, oof_idx) in enumerate(self.splits):
+        for i in range(self.n_splits):
             if not self.early_stop_oof[i]:
+                val_idx, oof_idx = self.splits[i]
                 y_i = y[val_idx]
                 y_score_i = y_score[val_idx]
 
@@ -428,9 +445,9 @@ class ESWrapperOOF:
                     early_stop = False
                 # update best validation
                 if es_output.is_best_or_tie:
-                    self.best_val_metric_oof[i].append(
-                        self.early_stopping_wrapper_val_lst[i].best_score,
-                    )
+                    # self.best_val_metric_oof[i].append(
+                    #     self.early_stopping_wrapper_val_lst[i].best_score,
+                    # )
                     self.y_pred_proba_val_best_oof_list[
                         int((i - (i % self.n_folds)) / self.n_folds)
                     ][oof_idx] = y_pred_proba[oof_idx]
@@ -461,14 +478,14 @@ class ESWrapperOOF:
         #     self.early_stop_oof_score_over_time.append(float(es_oof_score))
         #
         if self.debug:
-            es_oof_score = self._es_template.score_func(
+            es_oof_score = self.early_stopping_wrapper_val_lst[0].score_func(
                 y,
                 self.y_pred_proba_val_best_oof,
             )
             self.early_stop_oof_score_over_time.append(es_oof_score)
-            self.early_stop_oof_score_over_time_avg.append(
-                np.mean([i[-1] for i in self.best_val_metric_oof]),
-            )
+            # self.early_stop_oof_score_over_time_avg.append(
+            #     np.mean([i[-1] for i in self.best_val_metric_oof]),
+            # )
         # print(f"round: {cur_round}, es_oof_score: {es_oof_score}, no-update% {no_updated_count/self.len_val}, {np.mean(self.early_stop_oof)}")
 
         # # Custom new version of LOO ES
