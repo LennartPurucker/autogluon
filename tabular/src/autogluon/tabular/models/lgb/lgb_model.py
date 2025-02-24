@@ -363,9 +363,9 @@ class LGBModel(AbstractModel):
             # Read learning curves from LOO.
             if es_custom_callback.enable_es_oof:
                 val_loo_es = es_custom_callback.es_wrapper_oof.early_stop_oof_score_over_time
-                metric_name = es_custom_callback.es_wrapper_oof._es_template.score_func.name
+                metric_name = es_custom_callback.es_wrapper_oof.early_stopping_wrapper_val_lst[0].score_func.name
                 if use_curve_metric_error:
-                    val_loo_es = [es_custom_callback.es_wrapper_oof._es_template.score_func.convert_score_to_error(s) for s in val_loo_es]
+                    val_loo_es = [es_custom_callback.es_wrapper_oof.early_stopping_wrapper_val_lst[0].score_func.convert_score_to_error(s) for s in val_loo_es]
                 curves["val_loo_es"] = filter({metric_name: val_loo_es}, metric_names)
 
             self.save_learning_curves(metrics=metric_names, curves=curves)

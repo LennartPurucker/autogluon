@@ -231,7 +231,6 @@ class ESWrapperOOF:
                 "split_method": "None",
                 "es_method": "default",
             }
-
         self.split_method = use_ts["split_method"]
         self.es_method = use_ts["es_method"]
 
@@ -246,12 +245,10 @@ class ESWrapperOOF:
         self.early_stop_oof_score_over_time = None
         self.early_stop_oof_score_over_time_avg = None
         self.problem_type = problem_type
-        self.use_ts = use_ts
         self.y_pred_proba_val_best_oof_fallback = None
 
-
         # For qualitative analysis
-        self.debug = False
+        self.debug = True
 
 
 
@@ -409,7 +406,7 @@ class ESWrapperOOF:
             #     y_pred_proba_val_best_oof_list = [copy.deepcopy(y_pred_proba) for _ in range(n_repeats)]
 
             case _:
-                raise ValueError(f"Unknown use_ts: {split_method}")
+                raise ValueError(f"Unknown split_method: {split_method}")
 
         return n_folds, n_repeats, splits, y_pred_proba_val_best_oof_list
 
