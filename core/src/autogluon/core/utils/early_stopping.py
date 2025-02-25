@@ -414,8 +414,137 @@ class ESWrapperOOF:
     def round_to_use(self) -> np.ndarray:
         return np.array([es.round_to_use for es in self.early_stopping_wrapper_val_lst])
 
-    # FIXME: docstring
-    # FIXME: y_pred_proba isn't the right name. But what should it be? It is the correct prediction format for stacker inputs.
+    def _update(
+            self,
+            y: np.ndarray,
+            y_score: np.ndarray,
+            cur_round: int,
+            y_pred_proba: np.ndarray,
+            n_opts_method = "LOOCVCV",
+    ) -> ESOOFOutput:
+        """LOOCVCV following Ng 1997, implemented such that it executes once at the end. Might be better as an
+        early stopping method?"""
+        if self.y_pred_proba_val_best_oof is None:
+            self.scores = []
+            self.y_pred_proba_over_time = []
+            self.run_loocvcv = False
+            self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
+
+        early_stop = self.early_stop_oof[0]
+        if not early_stop:
+            es_oof_score = self.early_stopping_wrapper_val_lst[0].score_func(
+                y,
+                y_score,
+            )
+            self.scores.append(es_oof_score)
+            self.y_pred_proba_over_time.append(y_pred_proba)
+
+            es_output = self.early_stopping_wrapper_val_lst[0].update(
+                y=y,
+                y_score=y_score,
+                cur_round=cur_round,
+            )
+            self.early_stop_oof[0] = es_output.early_stop
+            early_stop = self.early_stop_oof[0]
+
+        # Only compute LOOCVCV once!
+        if early_stop and (self.run_loocvcv is False):
+            self.run_loocvcv = True
+            print("start looocvcv")
+            match n_opts_method:
+                case "Dummy":
+                    n_opts = 20
+                    k = 100 * (1 - (1/(n_opts + 1)))
+                case "LOOCVCV":
+                    from autogluon.core.data.label_cleaner import LabelCleanerMulticlassToBinary
+
+                    n = len(self.scores)
+                    m_samples = len(y)
+                    # FIXME: selecting this must be in theory 1... inf
+                    #   Since we know the optimal region of n_opt is around 10, we can limit the search space here.
+                    n_opts = [i for i in range(5, 21)] + [25, 30, 35, 40, 45, 50]
+                    errors = []
+                    for n_opt in n_opts:
+                        estimated_error_samples = []
+                        for i in range(m_samples):
+                            y_minus_i = np.delete(y, i)
+                            y_i = y[i]
+                            train_wrong = []
+                            test_correct = []
+                            for j in range(n):
+                                y_label_j = np.argmax(
+                                    LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(
+                                        self.y_pred_proba_over_time[j],
+                                    ) if self.problem_type == BINARY else self.y_pred_proba_over_time[j],
+                                    axis=1
+                                )
+                                y_label_j_minus_i = np.delete(y_label_j, i)
+                                y_label_j_i = y_label_j[i]
+
+                                train_wrong.append(sum(y_label_j_minus_i != y_minus_i))
+                                test_correct.append(int(y_label_j_i != y_i))
+
+                            sort_key = np.argsort(train_wrong)
+                            train_wrong = np.array(train_wrong)[sort_key]
+                            test_correct = np.array(test_correct)[sort_key]
+
+                            e_func_map = {}
+                            for ii in range(m_samples):
+                                A = [j for j in range(n) if train_wrong[j] == ii]
+                                if len(A) == 0:
+                                    e_func_map[ii] = "ERROR"
+                                else:
+                                    e_func_map[ii] = 1/len(A) * sum([test_correct[j] for j in A])
+
+
+                            estimated_error_for_i = sum(
+                                [
+                                    (((n - j + 1)/n)**n_opt - ((n - j)/n)**n_opt) * e_func_map[train_wrong[j]]
+                                    for j in range(n)
+                                ]
+                            )
+                            estimated_error_samples.append(estimated_error_for_i)
+                        estimated_error_n_opt = np.mean(estimated_error_samples)
+                        errors.append(estimated_error_n_opt)
+                    best_n = n_opts[np.argmin(errors)]
+                    k = 100 * (1 - (1 / (best_n + 1)))
+
+
+                    # It does not seem to do anything using this CV-based approach
+                    # n_opts = [x for x in [6, 5,7,8,9, 10, 11,12,13,14, 15, 16,17,18,19,20, 25, 30, 35, 40, 45, 50] if x < len(self.scores)]
+                    # if not n_opts:
+                    #     n_opts = [len(self.scores)]
+                    # scores = []
+                    # for n_opt in n_opts:
+                    #     cv_scores = []
+                    #     for i in range(self.n_splits):
+                    #         _, oof_idx = self.splits[i]
+                    #
+                    #         k = 100 * (1 - (1 / (n_opt + 1)))
+                    #         best_of_k_percentile = np.argsort(np.array(self.scores))[int(np.ceil(k * len(self.scores) / 100)) - 1]
+                    #         n_opt_score = self.early_stopping_wrapper_val_lst[0].score_func(
+                    #             y[oof_idx],
+                    #             self.y_pred_proba_over_time[best_of_k_percentile][oof_idx],
+                    #         )
+                    #         cv_scores.append(n_opt_score)
+                    #     scores.append(np.mean(cv_scores))
+                    # k = 100 * (1 - (1 / (n_opts[np.argmax(scores)] + 1)))
+                case _:
+                    raise ValueError(f"Unknown n_opts_method: {n_opts_method}")
+
+            best_of_k_percentile = np.argsort(np.array(self.scores))[int(np.ceil(k * len(self.scores) / 100)) - 1]
+            self.early_stop_oof_score_over_time.append(self.scores[best_of_k_percentile])
+            self.y_pred_proba_val_best_oof = self.y_pred_proba_over_time[best_of_k_percentile]
+        elif early_stop and (self.run_loocvcv is True):
+            self.early_stop_oof_score_over_time.append(self.scores[-1])
+            self.y_pred_proba_val_best_oof = self.y_pred_proba_over_time[-1]
+        else:
+            self.early_stop_oof_score_over_time.append(es_oof_score)
+            self.y_pred_proba_val_best_oof = y_pred_proba
+
+
+        return ESOOFOutput(early_stop=early_stop)
+
     def update(
         self,
         y: np.ndarray,
