@@ -1335,6 +1335,22 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
             "Then holdout validation data is used to detect stacked overfitting."
         )
 
+        # ----- Check for LOO OOF Parameters and remove them if needed
+        from copy import deepcopy
+        ag_fit_kwargs = deepcopy(ag_fit_kwargs)
+        new_hps = {}
+        for k, v in ag_fit_kwargs["hyperparameters"].items():
+            new_hp_for_model = []
+            for hp  in v:
+                if hp.pop("ag.es_oof_skip_for_dynamic_stacking", False):
+                    hp.pop("ag.es_oof")
+                    hp.pop("ag.use_ts")
+
+                new_hp_for_model.append(hp)
+            new_hps[k] = new_hp_for_model
+        ag_fit_kwargs["hyperparameters"] = new_hps
+        # ----
+        
         if time_limit_og is not None:
             time_limit = int(time_limit_og * detection_time_frac)
             logger.info(f"\tRunning DyStack for up to {time_limit}s of the {time_limit_og}s of remaining time ({detection_time_frac*100:.0f}%).")

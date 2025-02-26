@@ -248,7 +248,7 @@ class ESWrapperOOF:
         self.y_pred_proba_val_best_oof_fallback = None
 
         # For qualitative analysis
-        self.debug = True
+        self.debug = False
 
 
 
@@ -604,12 +604,6 @@ class ESWrapperOOF:
         #     # es_oof_score =  float(np.mean(self.best_val_metric_oof))
         #     self.early_stop_oof_score_over_time.append(float(es_oof_score))
         #
-        if self.debug:
-            es_oof_score = self.early_stopping_wrapper_val_lst[0].score_func(
-                y,
-                self.y_pred_proba_val_best_oof,
-            )
-            self.early_stop_oof_score_over_time.append(es_oof_score)
             # self.early_stop_oof_score_over_time_avg.append(
             #     np.mean([i[-1] for i in self.best_val_metric_oof]),
             # )
@@ -651,7 +645,7 @@ class ESWrapperOOF:
 
         if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
             # Fix precision errors
-            if early_stop:
+            if early_stop or self.debug:
                 is_binary = self.problem_type == BINARY
 
                 if is_binary:
@@ -676,5 +670,12 @@ class ESWrapperOOF:
                     y_pred_proba = y_pred_proba[:, 1]
 
                 self.y_pred_proba_val_best_oof = y_pred_proba
+
+        if self.debug:
+            es_oof_score = self.early_stopping_wrapper_val_lst[0].score_func(
+                y,
+                self.y_pred_proba_val_best_oof,
+            )
+            self.early_stop_oof_score_over_time.append(es_oof_score)
 
         return ESOOFOutput(early_stop=early_stop)
