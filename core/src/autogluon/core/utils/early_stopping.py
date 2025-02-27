@@ -8,6 +8,7 @@ import pandas as pd
 from autogluon.core.constants import BINARY, PROBLEM_TYPES_CLASSIFICATION
 from autogluon.core.utils import generate_train_test_split
 from autogluon.core.utils.utils import CVSplitter
+import hashlib
 
 
 class AbstractES:
@@ -213,6 +214,11 @@ class ESWrapper:
             is_best_or_tie = False
         return is_best, is_best_or_tie
 
+def string_to_seed(s):
+    hash_obj = hashlib.sha256(s.encode('utf-8'))
+    seed = int(hash_obj.hexdigest(), 16)
+    max_int = np.iinfo(np.int32).max
+    return seed % max_int
 
 # TODO: Can crash during LOO scoring if roc_auc and all same class
 # TODO: This isn't really OOF, it is LOO.
@@ -225,15 +231,18 @@ class ESWrapperOOF:
         problem_type,
         best_is_later_if_tie: bool = True,
         use_ts=None,
+        model_name=None, # to control seeds for folds
     ):
         if use_ts is None:
             use_ts = {
                 "split_method": "None",
                 "es_method": "default",
+                "reshuffle_per_fold": False,
             }
         self.split_method = use_ts["split_method"]
         self.es_method = use_ts["es_method"]
-
+        self.reshuffle_per_fold = use_ts["reshuffle_per_fold"]
+        self.model_name = model_name
         self.es = es
         self.score_func = score_func
         self.best_is_later_if_tie = best_is_later_if_tie
@@ -271,6 +280,7 @@ class ESWrapperOOF:
         self.early_stop_custom_score_over_time = []
 
         self.early_stop_score_over_time = []
+        random_state = 0 if (self.reshuffle_per_fold and (self.model_name is None)) else string_to_seed(self.model_name)
         (
             self.n_folds,
             self.n_repeats,
@@ -281,6 +291,7 @@ class ESWrapperOOF:
             y_pred_proba=y_pred_proba,
             problem_type=self.problem_type,
             split_method=self.split_method,
+            random_state=random_state,
         )
 
         self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
@@ -298,7 +309,7 @@ class ESWrapperOOF:
         self.early_stop_oof = np.zeros(self.n_splits, dtype=np.bool_)
 
     @staticmethod
-    def create_loo_val_splits(*, y: pd.Series | np.ndarray, y_pred_proba: np.ndarray, problem_type: str, split_method: str):
+    def create_loo_val_splits(*, y: pd.Series | np.ndarray, y_pred_proba: np.ndarray, problem_type: str, split_method: str, random_state: int = 0):
         fake_x = pd.Series(list(range(len(y))))
         y = y.copy() if isinstance(y, pd.Series) else pd.Series(y)
         n_folds_default = 10
@@ -353,7 +364,7 @@ class ESWrapperOOF:
                 spliter = CVSplitter(
                     n_splits=n_folds,
                     n_repeats=n_repeats,
-                    random_state=0,
+                    random_state=random_state,
                     stratify=problem_type in PROBLEM_TYPES_CLASSIFICATION,
                 )
                 splits = [
@@ -366,6 +377,22 @@ class ESWrapperOOF:
                 y_pred_proba_val_best_oof_list = [
                     copy.deepcopy(y_pred_proba) for i in range(n_repeats)
                 ]
+            case "LOO":
+                from sklearn.model_selection import LeaveOneOut
+                n_folds = len(fake_x)
+                n_repeats = 1
+                spliter = LeaveOneOut()
+                splits = [
+                    [
+                        fake_x[train_index].astype(int).tolist(),
+                        fake_x[test_index].astype(int).tolist(),
+                    ]
+                    for train_index, test_index in spliter.split(fake_x, y=y)
+                ]
+                y_pred_proba_val_best_oof_list = [
+                    copy.deepcopy(y_pred_proba) for i in range(n_repeats)
+                ]
+
             case "50sT0.67":
                 n_repeats = 50
                 n_folds = 1  # higher nuber means more overlap of writing to OOF
@@ -378,7 +405,7 @@ class ESWrapperOOF:
                         y=y,
                         problem_type=problem_type,
                         test_size=0.67,
-                        random_state=0 + i,
+                        random_state=random_state + i,
                     )
                     splits.append(
                         (

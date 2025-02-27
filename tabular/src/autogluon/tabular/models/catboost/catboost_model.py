@@ -273,7 +273,7 @@ class CatBoostModel(AbstractModel):
         else:
             es = early_stopping_rounds[0](**early_stopping_rounds[1])
 
-        es_wrapper_oof = ESWrapperOOF(es=es, score_func=self.stopping_metric, best_is_later_if_tie=False, problem_type=self.problem_type, use_ts=use_ts)
+        es_wrapper_oof = ESWrapperOOF(es=es, score_func=self.stopping_metric, best_is_later_if_tie=False, problem_type=self.problem_type, use_ts=use_ts, model_name=os.path.basename(os.path.normpath(self.path_root)))
 
         y_val = y_val.to_numpy()
         # FIXME: This is imperfect, as it doesn't include iterations that would have still been running without early stopping for LOO.

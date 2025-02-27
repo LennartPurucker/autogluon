@@ -38,6 +38,7 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
         stopping_metric: Callable | None = None,
         problem_type: str | None = None,
         use_ts: bool = False,
+        model_name: str | None = None,
     ):
         if min_delta != 0.0:
             raise ValueError(f"Non-zero min_delta is not implemented in this callback.")
@@ -87,6 +88,7 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
                 best_is_later_if_tie=False,
                 problem_type=problem_type,
                 use_ts=use_ts,
+                model_name=model_name,
             )
         else:
             self.early_stop_oof = True

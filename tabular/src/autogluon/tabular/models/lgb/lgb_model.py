@@ -207,6 +207,8 @@ class LGBModel(AbstractModel):
                     stopping_metric=self.stopping_metric,
                     problem_type=self.problem_type,
                     use_ts=ag_params.get("use_ts", False),
+                    model_name=os.path.basename(os.path.normpath(self.path_root))
+
                 )
             else:
                 extra_es_callback_kwargs = dict()

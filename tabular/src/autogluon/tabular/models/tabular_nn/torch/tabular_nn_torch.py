@@ -310,7 +310,8 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                 early_stopping_method = self._get_early_stopping_strategy(num_rows_train=len(train_dataset))
             es_wrapper = ESWrapper(es=copy.deepcopy(early_stopping_method), score_func=score_method, best_is_later_if_tie=True)
             if es_oof_flag:
-                es_wrapper_oof = ESWrapperOOF(es=copy.deepcopy(early_stopping_method), score_func=score_method, best_is_later_if_tie=True, problem_type=self.problem_type, use_ts=ag_params.get("use_ts", False))
+                es_wrapper_oof = ESWrapperOOF(es=copy.deepcopy(early_stopping_method), score_func=score_method, best_is_later_if_tie=True, problem_type=self.problem_type, use_ts=ag_params.get("use_ts", False),
+                                              model_name=os.path.basename(os.path.normpath(self.path_root)))
 
         generate_curves = ag_params.get("generate_curves", False)
 
