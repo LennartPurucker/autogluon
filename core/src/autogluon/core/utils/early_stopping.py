@@ -241,7 +241,7 @@ class ESWrapperOOF:
             }
         self.split_method = use_ts["split_method"]
         self.es_method = use_ts["es_method"]
-        self.reshuffle_per_fold = use_ts["reshuffle_per_fold"]
+        self.reshuffle_per_fold = use_ts.get("reshuffle_per_fold", False)
         self.model_name = model_name
         self.es = es
         self.score_func = score_func
@@ -257,7 +257,7 @@ class ESWrapperOOF:
         self.y_pred_proba_val_best_oof_fallback = None
 
         # For qualitative analysis
-        self.debug = False
+        self.debug = True
 
 
 
