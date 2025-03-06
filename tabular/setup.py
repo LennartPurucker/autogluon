@@ -30,7 +30,6 @@ install_requires = [
     "networkx",  # version range defined in `core/_setup_utils.py`
     f"{ag.PACKAGE_NAME}.core=={version}",
     f"{ag.PACKAGE_NAME}.features=={version}",
-    "probmetrics"
 ]
 
 extras_require = {
