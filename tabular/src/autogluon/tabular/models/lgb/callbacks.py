@@ -205,9 +205,6 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
                 "Please report it at https://github.com/microsoft/LightGBM/issues"
             )
 
-        if not self.early_stop_oof:
-            self._update_es_oof(env=env)
-
         # self.best_score_list is initialized to an empty list
         first_time_updating_best_score_list = (self.best_score_list == [])
         for i in self.indices_to_check:
@@ -238,6 +235,9 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
             self._final_iteration_check(env, eval_name_splitted, i)
             if self.early_stop:
                 self.early_stop_idx = i
+
+        if not self.early_stop_oof:
+            self._update_es_oof(env=env)
 
         if self.early_stop and self.early_stop_oof:
             if self.verbose:
@@ -277,7 +277,8 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
             y_score = y_pred_val
 
         # score_val = self.stopping_metric(self.y_val, y_pred_val)
-        es_oof_output = self.es_wrapper_oof.update(y=self.y_val, y_score=y_score, cur_round=env.iteration, y_pred_proba=y_pred_val)
+        es_oof_output = self.es_wrapper_oof.update(y=self.y_val, y_score=y_score, cur_round=env.iteration, y_pred_proba=y_pred_val,
+                                                   default_early_stop=self.early_stop)
         self.early_stop_oof = es_oof_output.early_stop
         # self.early_stop_oof = True
 

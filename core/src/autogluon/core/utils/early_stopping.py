@@ -600,13 +600,16 @@ class ESWrapperOOF:
         y_score: np.ndarray,
         cur_round: int,
         y_pred_proba: np.ndarray,
+        default_early_stop: bool | None = None,
     ) -> ESOOFOutput:
         if self.y_pred_proba_val_best_oof is None:
             self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
 
         early_stop = True
         if self.split_method == "new":
-            run_loop = np.mean(self.early_stop_oof) < 0.66
+            # run_loop = np.mean(self.early_stop_oof) < 0.66
+            # use this for now
+            run_loop = np.sum(self.early_stop_oof) != len(self.early_stop_oof)
         else:
             run_loop = np.sum(self.early_stop_oof) != len(self.early_stop_oof)
         if run_loop:
@@ -701,6 +704,9 @@ class ESWrapperOOF:
         #
         #     if self.use_ts:
         #         self.y_pred_proba_val_best_oof = y_pred_proba_val_best_oof_custom
+
+        if (self.split_method == "new") and default_early_stop is not None:
+            early_stop = default_early_stop
 
         if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
             # Fix precision errors

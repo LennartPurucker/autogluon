@@ -513,7 +513,7 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                     break
 
                 if es_oof_flag:
-                    es_oof_output = es_wrapper_oof.update(y=y_val, y_score=y_score, cur_round=epoch - 1, y_pred_proba=y_pred_proba_val)
+                    es_oof_output = es_wrapper_oof.update(y=y_val, y_score=y_score, cur_round=epoch - 1, y_pred_proba=y_pred_proba_val, default_early_stop=early_stop)
                     early_stop_oof = es_oof_output.early_stop
                 else:
                     early_stop_oof = True

@@ -285,6 +285,7 @@ class CatBoostModel(AbstractModel):
             else:
                 y_score = y_pred_proba
 
+            # default_early_stop not needed for CatBoost as CatBoost was already stopped training
             es_wrapper_oof.update(y=y_val, y_score=y_score, cur_round=i, y_pred_proba=y_pred_proba)
 
         y_pred_proba_val_best_oof = es_wrapper_oof.y_pred_proba_val_best_oof
