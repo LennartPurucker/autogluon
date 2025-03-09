@@ -232,6 +232,7 @@ class ESWrapperOOF:
         best_is_later_if_tie: bool = True,
         use_ts=None,
         model_name=None, # to control seeds for folds
+        debug=False,
     ):
         if use_ts is None:
             use_ts = {
@@ -239,6 +240,7 @@ class ESWrapperOOF:
                 "es_method": "default",
                 "reshuffle_per_fold": False,
             }
+        self.debug = use_ts["debug"] if "debug" in use_ts else debug
         self.split_method = use_ts["split_method"]
         self.es_method = use_ts["es_method"]
         self.reshuffle_per_fold = use_ts.get("reshuffle_per_fold", False)
@@ -256,10 +258,6 @@ class ESWrapperOOF:
         self.problem_type = problem_type
         self.y_pred_proba_val_best_oof_fallback = None
 
-        # For qualitative analysis
-        self.debug = True
-
-
 
     def _init_wrappers(self, y: np.ndarray, y_pred_proba: np.ndarray):
 
@@ -271,6 +269,8 @@ class ESWrapperOOF:
                 self.es.max_patience = 20
             case "default":
                 pass
+            case "new":
+                self.es = SimpleES(patience=5)
             case _:
                 raise ValueError(f"Unknown es_method: {self.es_method}")
 
@@ -280,7 +280,7 @@ class ESWrapperOOF:
         self.early_stop_custom_score_over_time = []
 
         self.early_stop_score_over_time = []
-        random_state = 0 if (self.reshuffle_per_fold and (self.model_name is None)) else string_to_seed(self.model_name)
+        random_state = 0 if ((not self.reshuffle_per_fold) or (self.model_name is None)) else string_to_seed(self.model_name)
         (
             self.n_folds,
             self.n_repeats,
@@ -297,14 +297,16 @@ class ESWrapperOOF:
         self.y_pred_proba_val_best_oof = copy.deepcopy(y_pred_proba)
         self.y_pred_proba_val_best_oof_fallback = copy.deepcopy(y_pred_proba)
         self.n_splits = len(self.splits)
-        self.early_stopping_wrapper_val_lst: list[ESWrapper] = [
+
+        self.early_stopping_wrapper_val_lst: list[ESWrapper] = []
+        for _ in range(self.n_splits):
+            self.early_stopping_wrapper_val_lst.append(
             ESWrapper(
-                es=self.es,
+                es=copy.deepcopy(self.es),
                 score_func=self.score_func,
                 best_is_later_if_tie=self.best_is_later_if_tie,
             )
-            for _ in range(self.n_splits)
-        ]
+            )
         # self.best_val_metric_oof = [[] for i in range(self.n_splits)]  # higher = better
         self.early_stop_oof = np.zeros(self.n_splits, dtype=np.bool_)
 
@@ -376,6 +378,26 @@ class ESWrapperOOF:
                 ]
                 y_pred_proba_val_best_oof_list = [
                     copy.deepcopy(y_pred_proba) for i in range(n_repeats)
+                ]
+            case "new":
+                n_repeats = 5
+                n_folds = 20
+
+                spliter = CVSplitter(
+                    n_splits=n_folds,
+                    n_repeats=n_repeats,
+                    random_state=random_state,
+                    stratify=problem_type in PROBLEM_TYPES_CLASSIFICATION,
+                )
+                splits = [
+                    [
+                        fake_x[train_index].astype(int).tolist(),
+                        fake_x[test_index].astype(int).tolist(),
+                    ]
+                    for train_index, test_index in spliter.split(fake_x, y=y)
+                ]
+                y_pred_proba_val_best_oof_list = [
+                    copy.deepcopy(y_pred_proba).astype(np.float64) for i in range(n_repeats)
                 ]
             case "LOO":
                 from sklearn.model_selection import LeaveOneOut
@@ -583,8 +605,17 @@ class ESWrapperOOF:
             self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
 
         early_stop = True
-        for i in range(self.n_splits):
-            if not self.early_stop_oof[i]:
+        if self.split_method == "new":
+            run_loop = np.mean(self.early_stop_oof) < 0.66
+        else:
+            run_loop = np.sum(self.early_stop_oof) != len(self.early_stop_oof)
+        if run_loop:
+            for i in range(self.n_splits):
+
+                if (self.split_method != "new") and self.early_stop_oof[i]:
+                    continue
+
+
                 val_idx, oof_idx = self.splits[i]
                 y_i = y[val_idx]
                 y_score_i = y_score[val_idx]
@@ -594,6 +625,7 @@ class ESWrapperOOF:
                     y_score=y_score_i,
                     cur_round=cur_round,
                 )
+
                 self.early_stop_oof[i] = es_output.early_stop
                 if not es_output.early_stop:
                     early_stop = False
@@ -615,10 +647,10 @@ class ESWrapperOOF:
             self.y_pred_proba_val_best_oof = np.nanmean(
                 self.y_pred_proba_val_best_oof_list,
                 axis=0,
-            )
+            ).astype(np.float32)
 
             # This should almost surely never happen.
-            if np.isnan(self.y_pred_proba_val_best_oof).any():
+            if (self.split_method == "50sT0.67") and np.isnan(self.y_pred_proba_val_best_oof).any():
                 self.y_pred_proba_val_best_oof = np.where(
                     np.isnan(self.y_pred_proba_val_best_oof),
                     self.y_pred_proba_val_best_oof_fallback,
