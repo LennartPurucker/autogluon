@@ -270,7 +270,8 @@ class ESWrapperOOF:
             case "default":
                 pass
             case "new":
-                self.es = SimpleES(patience=5)
+                pass
+                # self.es = SimpleES(patience=5)
             case _:
                 raise ValueError(f"Unknown es_method: {self.es_method}")
 
@@ -380,7 +381,7 @@ class ESWrapperOOF:
                     copy.deepcopy(y_pred_proba) for i in range(n_repeats)
                 ]
             case "new":
-                n_repeats = 5
+                n_repeats = 1
                 n_folds = 20
 
                 spliter = CVSplitter(
@@ -606,43 +607,34 @@ class ESWrapperOOF:
             self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
 
         early_stop = True
-        if self.split_method == "new":
-            # run_loop = np.mean(self.early_stop_oof) < 0.66
-            # use this for now
-            run_loop = np.sum(self.early_stop_oof) != len(self.early_stop_oof)
-        else:
-            run_loop = np.sum(self.early_stop_oof) != len(self.early_stop_oof)
-        if run_loop:
-            for i in range(self.n_splits):
+        for i in range(self.n_splits):
+            if self.early_stop_oof[i]:
+                continue
 
-                if (self.split_method != "new") and self.early_stop_oof[i]:
-                    continue
+            val_idx, oof_idx = self.splits[i]
+            y_i = y[val_idx]
+            y_score_i = y_score[val_idx]
 
+            es_output = self.early_stopping_wrapper_val_lst[i].update(
+                y=y_i,
+                y_score=y_score_i,
+                cur_round=cur_round,
+            )
 
-                val_idx, oof_idx = self.splits[i]
-                y_i = y[val_idx]
-                y_score_i = y_score[val_idx]
+            self.early_stop_oof[i] = es_output.early_stop
+            if not es_output.early_stop:
+                early_stop = False
+            # update best validation
+            if es_output.is_best_or_tie:
+                # self.best_val_metric_oof[i].append(
+                #     self.early_stopping_wrapper_val_lst[i].best_score,
+                # )
+                self.y_pred_proba_val_best_oof_list[
+                    int((i - (i % self.n_folds)) / self.n_folds)
+                ][oof_idx] = y_pred_proba[oof_idx]
 
-                es_output = self.early_stopping_wrapper_val_lst[i].update(
-                    y=y_i,
-                    y_score=y_score_i,
-                    cur_round=cur_round,
-                )
-
-                self.early_stop_oof[i] = es_output.early_stop
-                if not es_output.early_stop:
-                    early_stop = False
-                # update best validation
-                if es_output.is_best_or_tie:
-                    # self.best_val_metric_oof[i].append(
-                    #     self.early_stopping_wrapper_val_lst[i].best_score,
-                    # )
-                    self.y_pred_proba_val_best_oof_list[
-                        int((i - (i % self.n_folds)) / self.n_folds)
-                    ][oof_idx] = y_pred_proba[oof_idx]
-
-                    # Set fallback to last-stopped predictions (likely it would be better to use the best val epoch instead)
-                    self.y_pred_proba_val_best_oof_fallback = y_pred_proba
+                # Set fallback to last-stopped predictions (likely it would be better to use the best val epoch instead)
+                self.y_pred_proba_val_best_oof_fallback = y_pred_proba
 
         if len(self.y_pred_proba_val_best_oof_list) == 1:
             self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof_list[0]
