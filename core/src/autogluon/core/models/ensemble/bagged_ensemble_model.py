@@ -602,7 +602,7 @@ class BaggedEnsembleModel(AbstractModel):
 
             # Using raw_oof_proba
             es_wrapper_oof._no_bagging_update(y=y, y_score=raw_oof_proba, cur_round=iteration_i, y_pred_proba=raw_oof_proba)
-            unbiased_oof_proba = fix_precision_errors(es_wrapper_oof.y_pred_proba_val_best_oof)
+            unbiased_oof_proba = fix_precision_errors(es_wrapper_oof.y_pred_proba_val_best_oof) if self.problem_type in PROBLEM_TYPES_CLASSIFICATION else es_wrapper_oof.y_pred_proba_val_best_oof
 
             # for debugging / testing
             if debug_mode:
