@@ -35,6 +35,10 @@ from .fold_fitting_strategy import (
     SequentialLocalFoldFittingStrategy,
 )
 
+from autogluon.core.utils.early_stopping import ESWrapperOOF, SimpleES
+from autogluon.core.constants import PROBLEM_TYPES_CLASSIFICATION
+from autogluon.core.data.label_cleaner import LabelCleanerMulticlassToBinary
+
 logger = logging.getLogger(__name__)
 dup_filter = DuplicateFilter()
 logger.addFilter(dup_filter)
@@ -545,6 +549,10 @@ class BaggedEnsembleModel(AbstractModel):
             sample_weight = sample_weight[valid_indices]
         return self.score_with_y_pred_proba(y=y, y_pred_proba=y_pred_proba, sample_weight=sample_weight)
 
+    def is_loo_es_model(self):
+        self._load_oof()
+        return self._oof_pred_proba_over_time is not None
+
     def compute_unbiased_oof(self, y, sample_weight: np.ndarray | None = None, overwrite_oof: bool = True):
         """Compute unbiased OOF (using our new method)."""
         self._load_oof()
@@ -558,10 +566,6 @@ class BaggedEnsembleModel(AbstractModel):
             oof_pred_model_repeats_template=np.zeros_like(self._oof_pred_model_repeats),
             debug_mode=debug_mode,
         )
-
-        from autogluon.core.utils.early_stopping import ESWrapperOOF, SimpleES, AdaptiveES
-        from autogluon.core.constants import BINARY, PROBLEM_TYPES_CLASSIFICATION
-        from autogluon.core.data.label_cleaner import LabelCleanerMulticlassToBinary
 
         es_wrapper_oof = ESWrapperOOF(
             es=SimpleES(patience=5),
@@ -589,7 +593,7 @@ class BaggedEnsembleModel(AbstractModel):
                 y_pred_proba = y_pred_proba[:, 1]
             return y_pred_proba
 
-        for iteration_i, (oof_proba, raw_oof_proba) in enumerate(zip(oof_proba_over_time, raw_oof_proba_over_time)):
+        for iteration_i, (oof_proba, raw_oof_proba) in enumerate(zip(oof_proba_over_time if debug_mode else raw_oof_proba_over_time, raw_oof_proba_over_time)):
             # Hacky fix precision errors.
             if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
                 if debug_mode:

@@ -2144,17 +2144,18 @@ class AbstractTrainer:
                 if model.is_valid_oof() or isinstance(model, WeightedEnsembleModel):
                     score = model.score_with_oof(y=y, sample_weight=w)
 
-                    # TODO: add check if OOF is enabled for the model. If not, skip.
-                    model.compute_unbiased_oof(y=y,sample_weight=w, overwrite_oof=True)
-                    score_oof = model.score_with_oof(y=y, sample_weight=w)
+                    if model.is_loo_es_model():
+                        # TODO: add check if OOF is enabled for the model. If not, skip.
+                        model.compute_unbiased_oof(y=y,sample_weight=w, overwrite_oof=True)
+                        score_oof = model.score_with_oof(y=y, sample_weight=w)
 
-                    logger.log(
-                        20,
-                        f"\tReplacing original validation predictions with ES-OOF variants to reduce overfitting:\n"
-                        f"\t\t{score:.4f}\t = Validation Score (Original)\n"
-                        f"\t\t{score_oof:.4f}\t = Validation Score (ES-OOF)"
-                    )
-                    score = score_oof
+                        logger.log(
+                            20,
+                            f"\tReplacing original validation predictions with ES-OOF variants to reduce overfitting:\n"
+                            f"\t\t{score:.4f}\t = Validation Score (Original)\n"
+                            f"\t\t{score_oof:.4f}\t = Validation Score (ES-OOF)"
+                        )
+                        score = score_oof
                 else:
                     score = None
             else:
