@@ -381,8 +381,8 @@ class ESWrapperOOF:
                     copy.deepcopy(y_pred_proba) for i in range(n_repeats)
                 ]
             case "new":
-                n_repeats = 1
-                n_folds = 20
+                n_repeats = 5
+                n_folds = 10
 
                 spliter = CVSplitter(
                     n_splits=n_folds,
@@ -595,7 +595,27 @@ class ESWrapperOOF:
 
         return ESOOFOutput(early_stop=early_stop)
 
+
     def update(
+        self,
+        y: np.ndarray,
+        y_score: np.ndarray,
+        cur_round: int,
+        y_pred_proba: np.ndarray,
+        default_early_stop: bool | None = None,
+        default_is_best: bool | None = None,
+    ) -> ESOOFOutput:
+        assert default_early_stop is not None, f"For new exp, we need outer early stop, {default_early_stop}"
+        assert default_is_best is not None, f"For new exp, we need outer is_best, {default_is_best}"
+
+        if self.y_pred_proba_val_best_oof is None:
+            self.y_pred_proba_val_best_oof = []
+
+        self.y_pred_proba_val_best_oof.append((y_pred_proba, default_is_best))
+
+        return ESOOFOutput(early_stop=default_early_stop)
+
+    def _no_bagging_update(
         self,
         y: np.ndarray,
         y_score: np.ndarray,
@@ -700,33 +720,33 @@ class ESWrapperOOF:
         if (self.split_method == "new") and default_early_stop is not None:
             early_stop = default_early_stop
 
-        if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
-            # Fix precision errors
-            if early_stop or self.debug:
-                is_binary = self.problem_type == BINARY
-
-                if is_binary:
-                    from autogluon.core.data.label_cleaner import (
-                        LabelCleanerMulticlassToBinary,
-                    )
-
-                    y_pred_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(
-                        self.y_pred_proba_val_best_oof,
-                    )  # self.y_pred_proba_val_best_oof
-                else:
-                    y_pred_proba = self.y_pred_proba_val_best_oof
-
-                if not np.allclose(
-                    y_pred_proba.sum(axis=1),
-                    1,
-                    rtol=np.sqrt(np.finfo(y_pred_proba.dtype).eps),
-                ):
-                    y_pred_proba /= np.sum(y_pred_proba, axis=1)[:, np.newaxis]
-
-                if is_binary:
-                    y_pred_proba = y_pred_proba[:, 1]
-
-                self.y_pred_proba_val_best_oof = y_pred_proba
+        # if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
+        #     # Fix precision errors
+        #     if early_stop or self.debug:
+        #         is_binary = self.problem_type == BINARY
+        #
+        #         if is_binary:
+        #             from autogluon.core.data.label_cleaner import (
+        #                 LabelCleanerMulticlassToBinary,
+        #             )
+        #
+        #             y_pred_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(
+        #                 self.y_pred_proba_val_best_oof,
+        #             )  # self.y_pred_proba_val_best_oof
+        #         else:
+        #             y_pred_proba = self.y_pred_proba_val_best_oof
+        #
+        #         if not np.allclose(
+        #             y_pred_proba.sum(axis=1),
+        #             1,
+        #             rtol=np.sqrt(np.finfo(y_pred_proba.dtype).eps),
+        #         ):
+        #             y_pred_proba /= np.sum(y_pred_proba, axis=1)[:, np.newaxis]
+        #
+        #         if is_binary:
+        #             y_pred_proba = y_pred_proba[:, 1]
+        #
+        #         self.y_pred_proba_val_best_oof = y_pred_proba
 
         if self.debug:
             es_oof_score = self.early_stopping_wrapper_val_lst[0].score_func(

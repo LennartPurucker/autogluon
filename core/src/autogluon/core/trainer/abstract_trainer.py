@@ -2122,8 +2122,11 @@ class AbstractTrainer:
                 y_pred_proba_val = model.predict_proba(X_val, record_time=True)
                 score = model.score_with_y_pred_proba(y=y_val, y_pred_proba=y_pred_proba_val, sample_weight=w_val)
                 if model.y_pred_proba_val_oof_ is not None:
+                    # TODO: re-implement in the same way below
+
                     y_pred_proba_val_oof = model.y_pred_proba_val_oof_
                     score_oof = model.score_with_y_pred_proba(y=y_val, y_pred_proba=y_pred_proba_val_oof, sample_weight=w_val)
+
 
                     # TODO: maybe make this logging work for bagged models too,
                     #  currently we overwrite their oof instead of keeping track of OG and ES-OOF
@@ -2140,6 +2143,18 @@ class AbstractTrainer:
             elif isinstance(model, BaggedEnsembleModel):
                 if model.is_valid_oof() or isinstance(model, WeightedEnsembleModel):
                     score = model.score_with_oof(y=y, sample_weight=w)
+
+                    # TODO: add check if OOF is enabled for the model. If not, skip.
+                    model.compute_unbiased_oof(y=y,sample_weight=w, overwrite_oof=True)
+                    score_oof = model.score_with_oof(y=y, sample_weight=w)
+
+                    logger.log(
+                        20,
+                        f"\tReplacing original validation predictions with ES-OOF variants to reduce overfitting:\n"
+                        f"\t\t{score:.4f}\t = Validation Score (Original)\n"
+                        f"\t\t{score_oof:.4f}\t = Validation Score (ES-OOF)"
+                    )
+                    score = score_oof
                 else:
                     score = None
             else:

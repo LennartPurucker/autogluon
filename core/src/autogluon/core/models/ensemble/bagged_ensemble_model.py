@@ -61,6 +61,7 @@ class BaggedEnsembleModel(AbstractModel):
     """
 
     _oof_filename = "oof.pkl"
+    _oof_filename_over_time = "oof_over_time.pkl"
 
     def __init__(self, model_base: Union[AbstractModel, Type[AbstractModel]], model_base_kwargs: Dict[str, any] = None, random_state: int = 0, **kwargs):
         if inspect.isclass(model_base):
@@ -96,6 +97,8 @@ class BaggedEnsembleModel(AbstractModel):
 
         self._child_num_cpus = None
         self._child_num_gpus = None
+
+        self._oof_pred_proba_over_time = None
 
         super().__init__(problem_type=self.model_base.problem_type, eval_metric=self.model_base.eval_metric, **kwargs)
 
@@ -542,6 +545,129 @@ class BaggedEnsembleModel(AbstractModel):
             sample_weight = sample_weight[valid_indices]
         return self.score_with_y_pred_proba(y=y, y_pred_proba=y_pred_proba, sample_weight=sample_weight)
 
+    def compute_unbiased_oof(self, y, sample_weight: np.ndarray | None = None, overwrite_oof: bool = True):
+        """Compute unbiased OOF (using our new method)."""
+        self._load_oof()
+
+        debug_mode = False
+
+        data = self._oof_pred_proba_over_time
+        oof_proba_over_time, raw_oof_proba_over_time = self._biased_oof_over_iterations(
+            data_from_base_models=data,
+            oof_pred_proba_template=np.zeros_like(self._oof_pred_proba),
+            oof_pred_model_repeats_template=np.zeros_like(self._oof_pred_model_repeats),
+            debug_mode=debug_mode,
+        )
+
+        from autogluon.core.utils.early_stopping import ESWrapperOOF, SimpleES, AdaptiveES
+        from autogluon.core.constants import BINARY, PROBLEM_TYPES_CLASSIFICATION
+        from autogluon.core.data.label_cleaner import LabelCleanerMulticlassToBinary
+
+        es_wrapper_oof = ESWrapperOOF(
+            es=SimpleES(patience=5),
+            score_func=self.stopping_metric,
+            best_is_later_if_tie=False,
+            problem_type=self.problem_type,
+            use_ts=dict(
+                split_method="new",
+                es_method="default",
+                reshuffle_per_fold=False,
+            )
+        )
+
+        score_oof_proba_over_time, score_raw_oof_proba_over_time = [], []
+
+        def fix_precision_errors(y_pred_proba):
+            is_binary = self.problem_type == BINARY
+            if is_binary:
+                y_pred_proba = LabelCleanerMulticlassToBinary.convert_binary_proba_to_multiclass_proba(
+                    y_pred_proba
+                )
+            if not np.allclose(y_pred_proba.sum(axis=1), 1, rtol=np.sqrt(np.finfo(y_pred_proba.dtype).eps)):
+                y_pred_proba /= np.sum(y_pred_proba, axis=1)[:, np.newaxis]
+            if is_binary:
+                y_pred_proba = y_pred_proba[:, 1]
+            return y_pred_proba
+
+        for iteration_i, (oof_proba, raw_oof_proba) in enumerate(zip(oof_proba_over_time, raw_oof_proba_over_time)):
+            # Hacky fix precision errors.
+            if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
+                if debug_mode:
+                    oof_proba = fix_precision_errors(oof_proba)
+                raw_oof_proba = fix_precision_errors(raw_oof_proba)
+
+            # Using raw_oof_proba
+            es_wrapper_oof._no_bagging_update(y=y, y_score=raw_oof_proba, cur_round=iteration_i, y_pred_proba=raw_oof_proba)
+            unbiased_oof_proba = fix_precision_errors(es_wrapper_oof.y_pred_proba_val_best_oof)
+
+            # for debugging / testing
+            if debug_mode:
+                score_oof = self.score_with_y_pred_proba(y=y, y_pred_proba=oof_proba, sample_weight=sample_weight, as_error=True)
+                score_unbiased_oof = self.score_with_y_pred_proba(y=y, y_pred_proba=unbiased_oof_proba, sample_weight=sample_weight, as_error=True)
+                score_oof_proba_over_time.append(score_oof)
+                score_raw_oof_proba_over_time.append(score_unbiased_oof)
+
+        if overwrite_oof:
+            # TODO: this will be wrong if a model has _oof_pred_model_repeats==0 somewhere I think
+            self._oof_pred_proba = unbiased_oof_proba
+            self._oof_pred_model_repeats = np.ones_like(self._oof_pred_model_repeats)
+
+            save_pkl.save(
+                path=os.path.join(self.path, "utils", self._oof_filename),
+                object={
+                    "_oof_pred_proba": self._oof_pred_proba,
+                    "_oof_pred_model_repeats": self._oof_pred_model_repeats,
+                },
+            )
+
+        # Hack to update curve saving / for debugging / testing
+        if debug_mode:
+            from autogluon.core.utils.savers import save_json
+            file_path = os.path.join(self.path, "oof_curves.json")
+            save_json.save(file_path, dict(
+                score_oof_proba_over_time=score_oof_proba_over_time,
+                score_raw_oof_proba_over_time=score_raw_oof_proba_over_time
+            ))
+
+        return unbiased_oof_proba
+
+    def _biased_oof_over_iterations(self, data_from_base_models, oof_pred_proba_template, oof_pred_model_repeats_template, debug_mode):
+        """Compute unbiased OOF at iteration i."""
+
+
+        n_max_iteration = max(len(proba_over_time) for proba_over_time, _ in data_from_base_models)
+
+        # Construct repeats count for base models
+        overall_oof_pred_model_repeats = oof_pred_model_repeats_template.copy()
+        for _, val_index in data_from_base_models:
+            overall_oof_pred_model_repeats[val_index] += 1
+
+        oof_proba_over_time, raw_oof_proba_over_time  = [], []
+        n_base_models = len(data_from_base_models)
+        oof_pred_proba_at_i = np.tile(oof_pred_proba_template, (n_base_models, 1, 1))
+
+        # FIXME: think about what this means exactly, its confusing right now compared to holdout case.
+        raw_oof_pred_proba_at_i = np.tile(oof_pred_proba_template, (n_base_models, 1, 1))
+        for iteration_i in range(n_max_iteration):
+            for base_model_j in range(n_base_models):
+                proba_over_time, val_index = data_from_base_models[base_model_j]
+                # Only update the predictions if there are still more iterations and the iteration was/is the best.
+                if iteration_i < len(proba_over_time):
+                    if debug_mode:
+                        if proba_over_time[iteration_i][1]:
+                            oof_pred_proba_at_i[base_model_j][val_index] = proba_over_time[iteration_i][0]
+                    raw_oof_pred_proba_at_i[base_model_j][val_index] = proba_over_time[iteration_i][0]
+
+            if debug_mode:
+                oof_proba_over_time.append(
+                    self._predict_proba_oof(oof_pred_proba_at_i.sum(axis=0), overall_oof_pred_model_repeats)
+                )
+            raw_oof_proba_over_time.append(
+                self._predict_proba_oof(raw_oof_pred_proba_at_i.sum(axis=0), overall_oof_pred_model_repeats)
+            )
+
+        return oof_proba_over_time, raw_oof_proba_over_time
+
     def _fit_single(self, X, y, model_base, use_child_oof, time_limit=None, skip_oof=False, X_pseudo=None, y_pseudo=None, **kwargs):
         if self.is_fit():
             raise AssertionError("Model is already fit.")
@@ -795,9 +921,14 @@ class BaggedEnsembleModel(AbstractModel):
         if self._oof_pred_proba is None:
             self._oof_pred_proba = fold_fitting_strategy.oof_pred_proba
             self._oof_pred_model_repeats = fold_fitting_strategy.oof_pred_model_repeats
+            if fold_fitting_strategy.oof_pred_proba_over_time is not None:
+                self._oof_pred_proba_over_time = fold_fitting_strategy.oof_pred_proba_over_time
         else:
             self._oof_pred_proba += fold_fitting_strategy.oof_pred_proba
             self._oof_pred_model_repeats += fold_fitting_strategy.oof_pred_model_repeats
+            if fold_fitting_strategy.oof_pred_proba_over_time is not None:
+                self._oof_pred_proba_over_time += fold_fitting_strategy.oof_pred_proba_over_time
+        # TODO: need wto save _oof_pred_proba_over_time to disk in a clever way.
 
         self._cv_splitters += [cv_splitter for _ in range(n_repeats_started)]
         self._k_per_n_repeat += [k_fold for _ in range(n_repeats_finished)]
@@ -1258,6 +1389,15 @@ class BaggedEnsembleModel(AbstractModel):
             oof = load_pkl.load(path=os.path.join(self.path, "utils", self._oof_filename))
             self._oof_pred_proba = oof["_oof_pred_proba"]
             self._oof_pred_model_repeats = oof["_oof_pred_model_repeats"]
+        
+        if self._oof_pred_proba_over_time is not None:
+            pass
+        else:
+            try:
+                self._oof_pred_proba_over_time = load_pkl.load(path=os.path.join(self.path, "utils", self._oof_filename_over_time))
+            except FileNotFoundError:
+                self._oof_pred_proba_over_time = None
+
 
     def persist_child_models(self, reset_paths=True):
         for i, model_name in enumerate(self.models):
@@ -1302,6 +1442,13 @@ class BaggedEnsembleModel(AbstractModel):
             )
             self._oof_pred_proba = None
             self._oof_pred_model_repeats = None
+
+            if self._oof_pred_proba_over_time is not None:
+                save_pkl.save(
+                    path=os.path.join(path, "utils", self._oof_filename_over_time),
+                    object=self._oof_pred_proba_over_time,
+                )
+                self._oof_pred_proba_over_time = None
 
         _models = self.models
         if self.low_memory:

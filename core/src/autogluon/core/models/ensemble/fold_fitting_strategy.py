@@ -140,6 +140,7 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
         num_cpus: int,
         num_gpus: Union[int, float],
         time_limit_fold_ratio=0.8,
+        oof_pred_proba_over_time=None,
         **kwargs,
     ):
         self.model_base = model_base
@@ -153,6 +154,7 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
         self.time_start = time_start
         self.models = models
         self.oof_pred_proba = oof_pred_proba
+        self.oof_pred_proba_over_time = oof_pred_proba_over_time
         self.oof_pred_model_repeats = oof_pred_model_repeats
         self.bagged_ensemble_model = bagged_ensemble_model
         self.jobs = []
@@ -245,7 +247,7 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
             time_limit_fold = None
         return time_limit_fold
 
-    def _update_bagged_ensemble(self, fold_model, pred_proba, fold_ctx):
+    def _update_bagged_ensemble(self, fold_model, pred_proba, y_pred_proba_val_oof_, fold_ctx):
         _, val_index = fold_ctx["fold"]
         model_to_append = fold_model
         if not self.save_folds:
@@ -256,11 +258,16 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
         self.models.append(model_to_append)
         self.oof_pred_proba[val_index] += pred_proba
         self.oof_pred_model_repeats[val_index] += 1
+        if y_pred_proba_val_oof_ is not None:
+            if self.oof_pred_proba_over_time is None:
+                self.oof_pred_proba_over_time = []
+            self.oof_pred_proba_over_time.append((y_pred_proba_val_oof_, val_index))
         self.bagged_ensemble_model._add_child_times_to_bag(model=fold_model)
         self.bagged_ensemble_model._add_child_num_cpus(num_cpus=fold_model.fit_num_cpus)
         self.bagged_ensemble_model._add_child_num_gpus(num_gpus=fold_model.fit_num_gpus)
 
-    def _predict_oof(self, fold_model: AbstractModel, fold_ctx) -> Tuple[AbstractModel, ndarray]:
+
+    def _predict_oof(self, fold_model: AbstractModel, fold_ctx) -> Tuple[AbstractModel, ndarray, None | list[ndarray]]:
         fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix = self._get_fold_properties(fold_ctx)
         _, val_index = fold
         X_val_fold = self.X.iloc[val_index, :]
@@ -278,13 +285,19 @@ class FoldFittingStrategy(AbstractFoldFittingStrategy):
         y_pred_proba = fold_model.predict_proba(X_val_fold, record_time=True)
         # FIXME: Maybe avoid predicting above if this is present? But then we won't be able to record the time
         # FIXME: Why two different predict_oof functions for parallel and sequential? Should ideally be 1
-        if fold_model.y_pred_proba_val_oof_ is not None:
-            y_pred_proba = fold_model.y_pred_proba_val_oof_
+        # if fold_model.y_pred_proba_val_oof_ is not None:
+        #     y_pred_proba = fold_model.y_pred_proba_val_oof_
         fold_model.val_score = fold_model.score_with_y_pred_proba(y=y_val_fold, y_pred_proba=y_pred_proba)
         fold_model.reduce_memory_size(remove_fit=True, remove_info=False, requires_save=True)
         if not self.bagged_ensemble_model.params.get("save_bag_folds", True):
             fold_model.model = None
-        return fold_model, y_pred_proba
+
+        y_pred_proba_val_oof_ = None
+        if fold_model.y_pred_proba_val_oof_ is not None:
+            # TODO: consider saving this in a clever way on disc instead and just pass the path around
+            y_pred_proba_val_oof_ = fold_model.y_pred_proba_val_oof_
+
+        return fold_model, y_pred_proba, y_pred_proba_val_oof_
 
     @staticmethod
     def _get_fold_properties(fold_ctx):
@@ -324,8 +337,8 @@ class SequentialLocalFoldFittingStrategy(FoldFittingStrategy):
         time_start_fold = time.time()
         time_limit_fold = self._get_fold_time_limit(fold_ctx)
         fold_model = self._fit(self.model_base, time_start_fold, time_limit_fold, fold_ctx, self.model_base_kwargs)
-        fold_model, pred_proba = self._predict_oof(fold_model, fold_ctx)
-        self._update_bagged_ensemble(fold_model, pred_proba, fold_ctx)
+        fold_model, pred_proba, y_pred_proba_val_oof_ = self._predict_oof(fold_model, fold_ctx)
+        self._update_bagged_ensemble(fold_model, pred_proba, y_pred_proba_val_oof_, fold_ctx)
 
     def _fit(self, model_base, time_start_fold, time_limit_fold, fold_ctx, kwargs):
         fold, folds_finished, folds_left, folds_to_fit, is_last_fold, model_name_suffix = self._get_fold_properties(fold_ctx)
@@ -417,7 +430,7 @@ def _ray_fit(
     fold_model.fit(X=X_fold, y=y_fold, X_val=X_val_fold, y_val=y_val_fold, time_limit=time_limit_fold, **resources, **kwargs_fold)
     time_train_end_fold = time.time()
     fold_model.fit_time = time_train_end_fold - time_start_fold
-    fold_model, pred_proba = _ray_predict_oof(
+    fold_model, pred_proba, y_pred_proba_val_oof_ = _ray_predict_oof(
         fold_model=fold_model,
         X_val_fold=X_val_fold,
         y_val_fold=y_val_fold,
@@ -429,20 +442,22 @@ def _ray_fit(
         model_sync_path = model_sync_path + f"{fold_model.name}/"  # s3 path hence need "/" as the saperator
         bucket, prefix = s3_path_to_bucket_prefix(model_sync_path)
         upload_s3_folder(bucket=bucket, prefix=prefix, folder_to_upload=save_path, verbose=False)
-    return fold_model.name, pred_proba, time_start_fold, time_train_end_fold, fold_model.predict_time, fold_model.predict_1_time, fold_model.predict_n_size, fold_model.fit_num_cpus, fold_model.fit_num_gpus
+    return fold_model.name, pred_proba, y_pred_proba_val_oof_, time_start_fold, time_train_end_fold, fold_model.predict_time, fold_model.predict_1_time, fold_model.predict_n_size, fold_model.fit_num_cpus, fold_model.fit_num_gpus
 
 
 def _ray_predict_oof(fold_model: AbstractModel, X_val_fold: pd.DataFrame, y_val_fold: pd.Series, num_cpus: int = -1, save_bag_folds: bool = True) -> tuple[AbstractModel, ndarray]:
     y_pred_proba = fold_model.predict_proba(X_val_fold, record_time=True, num_cpus=num_cpus)
     # FIXME: Maybe avoid predicting above if this is present? But then we won't be able to record the time
     # FIXME: Why two different predict_oof functions for parallel and sequential? Should ideally be 1
+    y_pred_proba_val_oof_ = None
     if fold_model.y_pred_proba_val_oof_ is not None:
-        y_pred_proba = fold_model.y_pred_proba_val_oof_
+        # TODO: consider saving this in a clever way on disc instead and just pass the path around
+        y_pred_proba_val_oof_ = fold_model.y_pred_proba_val_oof_
     fold_model.val_score = fold_model.score_with_y_pred_proba(y=y_val_fold, y_pred_proba=y_pred_proba)
     fold_model.reduce_memory_size(remove_fit=True, remove_info=False, requires_save=True)
     if not save_bag_folds:
         fold_model.model = None
-    return fold_model, y_pred_proba
+    return fold_model, y_pred_proba, y_pred_proba_val_oof_
 
 
 class ParallelFoldFittingStrategy(FoldFittingStrategy):
@@ -555,11 +570,12 @@ class ParallelFoldFittingStrategy(FoldFittingStrategy):
 
     def _process_fold_results(self, finished, unfinished, fold_ctx):
         try:
-            fold_model, pred_proba, time_start_fit, time_end_fit, predict_time, predict_1_time, predict_n_size, fit_num_cpus, fit_num_gpus = self.ray.get(finished)
+            fold_model, pred_proba, y_pred_proba_val_oof_, time_start_fit, time_end_fit, predict_time, predict_1_time, predict_n_size, fit_num_cpus, fit_num_gpus = self.ray.get(finished)
             assert fold_ctx is not None
             self._update_bagged_ensemble(
                 fold_model=fold_model,
                 pred_proba=pred_proba,
+                y_pred_proba_val_oof_=y_pred_proba_val_oof_,
                 time_start_fit=time_start_fit,
                 time_end_fit=time_end_fit,
                 predict_time=predict_time,
@@ -750,7 +766,7 @@ class ParallelFoldFittingStrategy(FoldFittingStrategy):
             model_sync_path=self.model_sync_path,
         )
 
-    def _update_bagged_ensemble(self, fold_model, pred_proba, time_start_fit, time_end_fit, predict_time, predict_1_time, predict_n_size, fit_num_cpus, fit_num_gpus, fold_ctx):
+    def _update_bagged_ensemble(self, fold_model, pred_proba, y_pred_proba_val_oof_, time_start_fit, time_end_fit, predict_time, predict_1_time, predict_n_size, fit_num_cpus, fit_num_gpus, fold_ctx):
         _, val_index = fold_ctx["fold"]
         self.models.append(fold_model)
         self.oof_pred_proba[val_index] += pred_proba
@@ -777,6 +793,11 @@ class ParallelFoldFittingStrategy(FoldFittingStrategy):
         if self.fit_num_gpus is None:
             self.fit_num_gpus = []
         self.fit_num_gpus.append(fit_num_gpus)
+
+        if y_pred_proba_val_oof_ is not None:
+            if self.oof_pred_proba_over_time is None:
+                self.oof_pred_proba_over_time = []
+            self.oof_pred_proba_over_time.append((y_pred_proba_val_oof_, val_index))
 
     def _get_fold_time_limit(self):
         time_elapsed = time.time() - self.time_start

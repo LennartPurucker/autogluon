@@ -2878,6 +2878,7 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
         }
 
         model_data = {}
+        model_data_oof = {}
         for model in metadata["models"].values():
             model_name = model["model_name"]
             child_model_name = model.get("child_model_name", None)
@@ -2887,7 +2888,12 @@ class TabularPredictor(TabularPredictorDeprecatedMixin):
                 _model_name = model_name
             model_data[_model_name] = self._trainer.get_model_learning_curves(model=model_name, child_model=child_model_name)
 
-        return metadata, model_data
+            # Get curves for oof
+            model_path = self._trainer.get_model_attribute(model=model_name, attribute="path")
+            if model_name not in model_data_oof:
+                model_data_oof[model_name] = load_json.load(os.path.join(self._trainer.path, model_path, "oof_curves.json"))
+
+        return metadata, model_data, model_data_oof
 
     def model_failures(self, verbose: bool = False) -> pd.DataFrame:
         """

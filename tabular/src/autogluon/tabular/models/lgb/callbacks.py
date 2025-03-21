@@ -206,6 +206,7 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
             )
 
         # self.best_score_list is initialized to an empty list
+        self.is_best_iter = False
         first_time_updating_best_score_list = (self.best_score_list == [])
         for i in self.indices_to_check:
             if self.early_stop:
@@ -232,6 +233,7 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
                 continue  # train data for lgb.cv or sklearn wrapper (underlying lgb.train)
 
             self.early_stop = self.es[i].update(cur_round=env.iteration, is_best=is_best_iter)
+            self.is_best_iter = is_best_iter
             self._final_iteration_check(env, eval_name_splitted, i)
             if self.early_stop:
                 self.early_stop_idx = i
@@ -278,7 +280,7 @@ class _EarlyStoppingCustomCallback(_EarlyStoppingCallback):
 
         # score_val = self.stopping_metric(self.y_val, y_pred_val)
         es_oof_output = self.es_wrapper_oof.update(y=self.y_val, y_score=y_score, cur_round=env.iteration, y_pred_proba=y_pred_val,
-                                                   default_early_stop=self.early_stop)
+                                                   default_early_stop=self.early_stop, default_is_best=self.is_best_iter)
         self.early_stop_oof = es_oof_output.early_stop
         # self.early_stop_oof = True
 

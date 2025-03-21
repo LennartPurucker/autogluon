@@ -496,13 +496,15 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                 if early_stop:
                     # compute validation score
                     val_metric = score_method(y_val, y_score)
+                    is_best = False
                 else:
                     es_output = es_wrapper.update(y=y_val, y_score=y_score, cur_round=epoch - 1)
                     early_stop = es_output.early_stop
                     val_metric = es_output.score
+                    is_best = es_output.is_best_or_tie
 
                     # update best validation
-                    if es_output.is_best_or_tie:
+                    if is_best:
                         best_val_metric = val_metric
                         io_buffer = io.BytesIO()
                         torch.save(self.model, io_buffer)  # nosec B614
@@ -513,7 +515,8 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                     break
 
                 if es_oof_flag:
-                    es_oof_output = es_wrapper_oof.update(y=y_val, y_score=y_score, cur_round=epoch - 1, y_pred_proba=y_pred_proba_val, default_early_stop=early_stop)
+                    es_oof_output = es_wrapper_oof.update(y=y_val, y_score=y_score, cur_round=epoch - 1, y_pred_proba=y_pred_proba_val,
+                                                          default_early_stop=early_stop, default_is_best=is_best)
                     early_stop_oof = es_oof_output.early_stop
                 else:
                     early_stop_oof = True
@@ -576,12 +579,12 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                 curves["unbiased_val"] = unbiased_val_curves
 
             # Read learning curves from LOO.
-            if es_oof_flag:
-                val_loo_es = es_wrapper_oof.early_stop_oof_score_over_time
-                metric_name = self.stopping_metric.name
-                if use_curve_metric_error:
-                    val_loo_es = [self.stopping_metric.convert_score_to_error(s) for s in val_loo_es]
-                curves["val_loo_es"] = {metric_name: val_loo_es}
+            # if es_oof_flag:
+            #     val_loo_es = es_wrapper_oof.early_stop_oof_score_over_time
+            #     metric_name = self.stopping_metric.name
+            #     if use_curve_metric_error:
+            #         val_loo_es = [self.stopping_metric.convert_score_to_error(s) for s in val_loo_es]
+            #     curves["val_loo_es"] = {metric_name: val_loo_es}
 
                 # val_loo_es_avg = es_wrapper_oof.early_stop_oof_score_over_time_avg
                 # if use_curve_metric_error:

@@ -13,7 +13,7 @@ from autogluon.common.utils.try_import import try_import_catboost
 from autogluon.core.constants import BINARY, MULTICLASS, PROBLEM_TYPES_CLASSIFICATION, QUANTILE, SOFTCLASS
 from autogluon.core.models import AbstractModel
 from autogluon.core.models._utils import get_early_stopping_rounds
-from autogluon.core.utils.early_stopping import ESWrapperOOF
+from autogluon.core.utils.early_stopping import ESWrapperOOF, ESWrapper
 from autogluon.core.utils.exceptions import TimeLimitExceeded
 
 from .callbacks import EarlyStoppingCallback, MemoryCheckCallback, TimeCheckCallback
@@ -273,6 +273,7 @@ class CatBoostModel(AbstractModel):
         else:
             es = early_stopping_rounds[0](**early_stopping_rounds[1])
 
+        es_wrapper = ESWrapper(es=es, score_func=self.stopping_metric, best_is_later_if_tie=False)
         es_wrapper_oof = ESWrapperOOF(es=es, score_func=self.stopping_metric, best_is_later_if_tie=False, problem_type=self.problem_type, use_ts=use_ts, model_name=os.path.basename(os.path.normpath(self.path_root)))
 
         y_val = y_val.to_numpy()
@@ -285,8 +286,9 @@ class CatBoostModel(AbstractModel):
             else:
                 y_score = y_pred_proba
 
-            # default_early_stop not needed for CatBoost as CatBoost was already stopped training
-            es_wrapper_oof.update(y=y_val, y_score=y_score, cur_round=i, y_pred_proba=y_pred_proba)
+            es_out = es_wrapper.update(y_score=y_score, cur_round=i, y=y_val)
+            es_wrapper_oof.update(y=y_val, y_score=y_score, cur_round=i, y_pred_proba=y_pred_proba,
+                                  default_early_stop=es_out.early_stop, default_is_best=es_out.is_best_or_tie)
 
         y_pred_proba_val_best_oof = es_wrapper_oof.y_pred_proba_val_best_oof
 
