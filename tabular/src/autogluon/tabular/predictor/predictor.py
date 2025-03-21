@@ -5782,7 +5782,9 @@ def _dystack(
         val_data = holdout_data
     else:
         raise ValueError("Unsupported validation procedure during dynamic stacking!")
-
+    train_data = train_data.reset_index(drop=True)
+    val_data = val_data.reset_index(drop=True)
+    
     set_logger_verbosity(verbosity=ag_fit_kwargs["verbosity"])
     learner_og = copy.deepcopy(predictor._learner)
 

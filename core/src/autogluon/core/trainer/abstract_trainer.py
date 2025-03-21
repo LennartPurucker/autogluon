@@ -2146,6 +2146,7 @@ class AbstractTrainer:
 
                     if model.is_loo_es_model():
                         # TODO: add check if OOF is enabled for the model. If not, skip.
+                        y = y.values if isinstance(y, pd.Series) else y
                         model.compute_unbiased_oof(y=y,sample_weight=w, overwrite_oof=True)
                         score_oof = model.score_with_oof(y=y, sample_weight=w)
 
