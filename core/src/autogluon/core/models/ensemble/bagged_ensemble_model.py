@@ -648,10 +648,11 @@ class BaggedEnsembleModel(AbstractModel):
 
         oof_proba_over_time, raw_oof_proba_over_time  = [], []
         n_base_models = len(data_from_base_models)
-        oof_pred_proba_at_i = np.tile(oof_pred_proba_template, (n_base_models, 1, 1))
+        tile_shape = (n_base_models, 1, 1) if self.problem_type == MULTICLASS else (n_base_models, 1)
+        oof_pred_proba_at_i = np.tile(oof_pred_proba_template, tile_shape)
 
         # FIXME: think about what this means exactly, its confusing right now compared to holdout case.
-        raw_oof_pred_proba_at_i = np.tile(oof_pred_proba_template, (n_base_models, 1, 1))
+        raw_oof_pred_proba_at_i = np.tile(oof_pred_proba_template, tile_shape)
         for iteration_i in range(n_max_iteration):
             for base_model_j in range(n_base_models):
                 proba_over_time, val_index = data_from_base_models[base_model_j]
