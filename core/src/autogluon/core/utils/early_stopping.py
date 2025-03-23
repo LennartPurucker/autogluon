@@ -756,3 +756,38 @@ class ESWrapperOOF:
             self.early_stop_oof_score_over_time.append(es_oof_score)
 
         return ESOOFOutput(early_stop=early_stop)
+
+    def _no_bagging_update_no_es(
+        self,
+        y: np.ndarray,
+        y_score: np.ndarray,
+        cur_round: int,
+        y_pred_proba: np.ndarray,
+        default_early_stop: bool | None = None,
+    ) -> None:
+        if self.y_pred_proba_val_best_oof is None:
+            self._init_wrappers(y=y, y_pred_proba=y_pred_proba)
+
+        for i in range(self.n_splits):
+            val_idx, oof_idx = self.splits[i]
+            y_i = y[val_idx]
+            y_score_i = y_score[val_idx]
+
+            es_output = self.early_stopping_wrapper_val_lst[i].update(
+                y=y_i,
+                y_score=y_score_i,
+                cur_round=cur_round,
+            )
+
+            if es_output.is_best_or_tie:
+                self.y_pred_proba_val_best_oof_list[
+                    int((i - (i % self.n_folds)) / self.n_folds)
+                ][oof_idx] = y_pred_proba[oof_idx]
+
+        if len(self.y_pred_proba_val_best_oof_list) == 1:
+            self.y_pred_proba_val_best_oof = self.y_pred_proba_val_best_oof_list[0]
+        else:
+            self.y_pred_proba_val_best_oof = np.nanmean(
+                self.y_pred_proba_val_best_oof_list,
+                axis=0,
+            ).astype(np.float32)
