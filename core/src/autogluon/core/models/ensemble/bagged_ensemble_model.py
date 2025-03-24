@@ -553,33 +553,24 @@ class BaggedEnsembleModel(AbstractModel):
         self._load_oof()
         return self._oof_pred_proba_over_time is not None
 
-    def compute_unbiased_oof(self, y, sample_weight: np.ndarray | None = None, overwrite_oof: bool = True):
+    def compute_unbiased_oof(self, y, sample_weight: np.ndarray | None = None, overwrite_oof: bool = True,
+                             y_test = None, y_unbiased = None
+         ):
         """Compute unbiased OOF (using our new method)."""
         self._load_oof()
 
         debug_mode = False
 
         data = self._oof_pred_proba_over_time
-        oof_proba_over_time, raw_oof_proba_over_time = self._biased_oof_over_iterations(
+        oof_proba_over_time, raw_oof_proba_over_time, unbiased_val_proba_over_time, test_proba_over_time, bootstrap_oof_pred_proba_over_time= self._biased_oof_over_iterations(
             data_from_base_models=data,
             oof_pred_proba_template=np.zeros_like(self._oof_pred_proba),
             oof_pred_model_repeats_template=np.zeros_like(self._oof_pred_model_repeats),
             debug_mode=debug_mode,
         )
 
-        es_wrapper_oof = ESWrapperOOF(
-            es=SimpleES(patience=5),
-            score_func=self.stopping_metric,
-            best_is_later_if_tie=False,
-            problem_type=self.problem_type,
-            use_ts=dict(
-                split_method="new",
-                es_method="default",
-                reshuffle_per_fold=False,
-            )
-        )
-
-        score_oof_proba_over_time, score_raw_oof_proba_over_time = [], []
+        score_oof_proba_over_time, score_test_over_time, score_unbiased_val_over_time = [], [], []
+        score_bootstrap_oof_pred_proba_over_time = []
 
         def fix_precision_errors(y_pred_proba):
             is_binary = self.problem_type == BINARY
@@ -593,27 +584,26 @@ class BaggedEnsembleModel(AbstractModel):
                 y_pred_proba = y_pred_proba[:, 1]
             return y_pred_proba
 
-        for iteration_i, (oof_proba, raw_oof_proba) in enumerate(zip(oof_proba_over_time if debug_mode else raw_oof_proba_over_time, raw_oof_proba_over_time)):
-            # Hacky fix precision errors.
-            if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
-                if debug_mode:
-                    oof_proba = fix_precision_errors(oof_proba)
-                raw_oof_proba = fix_precision_errors(raw_oof_proba)
+        if debug_mode:
+            for iteration_i, (oof_proba, raw_oof_proba) in enumerate(zip(oof_proba_over_time if debug_mode else raw_oof_proba_over_time, raw_oof_proba_over_time)):
+                # Hacky fix precision errors.
+                if self.problem_type in PROBLEM_TYPES_CLASSIFICATION:
+                    if debug_mode:
+                        oof_proba = fix_precision_errors(oof_proba)
 
-            # Using raw_oof_proba
-            es_wrapper_oof._no_bagging_update_no_es(y=y, y_score=raw_oof_proba, cur_round=iteration_i, y_pred_proba=raw_oof_proba)
-            unbiased_oof_proba = fix_precision_errors(es_wrapper_oof.y_pred_proba_val_best_oof) if self.problem_type in PROBLEM_TYPES_CLASSIFICATION else es_wrapper_oof.y_pred_proba_val_best_oof
-
-            # for debugging / testing
-            if debug_mode:
+                # for debugging / testing
                 score_oof = self.score_with_y_pred_proba(y=y, y_pred_proba=oof_proba, sample_weight=sample_weight, as_error=True)
-                score_unbiased_oof = self.score_with_y_pred_proba(y=y, y_pred_proba=unbiased_oof_proba, sample_weight=sample_weight, as_error=True)
                 score_oof_proba_over_time.append(score_oof)
-                score_raw_oof_proba_over_time.append(score_unbiased_oof)
+
+                score_test_over_time.append(self.score_with_y_pred_proba(y=y_test, y_pred_proba=test_proba_over_time[iteration_i], as_error=True))
+                score_unbiased_val_over_time.append(self.score_with_y_pred_proba(y=y_unbiased, y_pred_proba=unbiased_val_proba_over_time[iteration_i], as_error=True))
+                score_bootstrap_oof_pred_proba_over_time.append(self.score_with_y_pred_proba(y=y, y_pred_proba=fix_precision_errors(bootstrap_oof_pred_proba_over_time[iteration_i] if self.problem_type in PROBLEM_TYPES_CLASSIFICATION else bootstrap_oof_pred_proba_over_time[iteration_i]), sample_weight=sample_weight, as_error=True))
+
+        _oof_pred_proba = fix_precision_errors(bootstrap_oof_pred_proba_over_time[-1])  if self.problem_type in PROBLEM_TYPES_CLASSIFICATION else bootstrap_oof_pred_proba_over_time[-1]
 
         if overwrite_oof:
             # TODO: this will be wrong if a model has _oof_pred_model_repeats==0 somewhere I think
-            self._oof_pred_proba = unbiased_oof_proba
+            self._oof_pred_proba = _oof_pred_proba
             self._oof_pred_model_repeats = np.ones_like(self._oof_pred_model_repeats)
 
             save_pkl.save(
@@ -630,10 +620,12 @@ class BaggedEnsembleModel(AbstractModel):
             file_path = os.path.join(self.path, "oof_curves.json")
             save_json.save(file_path, dict(
                 score_oof_proba_over_time=score_oof_proba_over_time,
-                score_raw_oof_proba_over_time=score_raw_oof_proba_over_time
+                score_test_over_time=score_test_over_time,
+                score_unbiased_val_over_time=score_unbiased_val_over_time,
+                score_bootstrap_oof_pred_proba_over_time=score_bootstrap_oof_pred_proba_over_time,
             ))
 
-        return unbiased_oof_proba
+        return _oof_pred_proba
 
     def _biased_oof_over_iterations(self, data_from_base_models, oof_pred_proba_template, oof_pred_model_repeats_template, debug_mode):
         """Compute unbiased OOF at iteration i."""
@@ -646,32 +638,46 @@ class BaggedEnsembleModel(AbstractModel):
         for _, val_index in data_from_base_models:
             overall_oof_pred_model_repeats[val_index] += 1
 
-        oof_proba_over_time, raw_oof_proba_over_time  = [], []
+        oof_proba_over_time, raw_oof_proba_over_time, test_proba_over_time, unbiased_val_proba_over_time  = [], [], [], []
         n_base_models = len(data_from_base_models)
         tile_shape = (n_base_models, 1, 1) if self.problem_type == MULTICLASS else (n_base_models, 1)
-        oof_pred_proba_at_i = np.tile(oof_pred_proba_template, tile_shape)
 
-        # FIXME: think about what this means exactly, its confusing right now compared to holdout case.
-        raw_oof_pred_proba_at_i = np.tile(oof_pred_proba_template, tile_shape)
+        if debug_mode:
+            oof_pred_proba_at_i = np.tile(oof_pred_proba_template, tile_shape)
+            unbiased_val_proba_at_i = np.tile(data_from_base_models[0][0][0][1][0], tile_shape)
+            test_proba_at_i = np.tile(data_from_base_models[0][0][0][1][1], tile_shape)
+
+        bootstrap_oof_pred_proba_over_time = []
+        n_bootstraps = 50
+        bootstrap_oof_pred_proba_at_i = np.tile(oof_pred_proba_template, tuple([n_bootstraps] + list(tile_shape)))
+
+
         for iteration_i in range(n_max_iteration):
             for base_model_j in range(n_base_models):
                 proba_over_time, val_index = data_from_base_models[base_model_j]
                 # Only update the predictions if there are still more iterations and the iteration was/is the best.
                 if iteration_i < len(proba_over_time):
+                    _preds = proba_over_time[iteration_i][0]
                     if debug_mode:
-                        if proba_over_time[iteration_i][1]:
-                            oof_pred_proba_at_i[base_model_j][val_index] = proba_over_time[iteration_i][0]
-                    raw_oof_pred_proba_at_i[base_model_j][val_index] = proba_over_time[iteration_i][0]
+                        if proba_over_time[iteration_i][-1]:
+                            oof_pred_proba_at_i[base_model_j][val_index] = _preds
+                            unbiased_val_proba_at_i[base_model_j] = proba_over_time[iteration_i][1][0]
+                            test_proba_at_i[base_model_j] = proba_over_time[iteration_i][1][1]
 
+                    for bootstrap_k in range(n_bootstraps):
+                        if proba_over_time[iteration_i][-2][bootstrap_k]:
+                            bootstrap_oof_pred_proba_at_i[bootstrap_k][base_model_j][val_index] = _preds
+
+            bootstrap_oof_pred_proba_over_time.append(bootstrap_oof_pred_proba_at_i.sum(axis=1).mean(axis=0))
             if debug_mode:
                 oof_proba_over_time.append(
                     self._predict_proba_oof(oof_pred_proba_at_i.sum(axis=0), overall_oof_pred_model_repeats)
                 )
-            raw_oof_proba_over_time.append(
-                self._predict_proba_oof(raw_oof_pred_proba_at_i.sum(axis=0), overall_oof_pred_model_repeats)
-            )
+                unbiased_val_proba_over_time.append(unbiased_val_proba_at_i.mean(axis=0))
+                test_proba_over_time.append(test_proba_at_i.mean(axis=0))
 
-        return oof_proba_over_time, raw_oof_proba_over_time
+
+        return oof_proba_over_time, raw_oof_proba_over_time, unbiased_val_proba_over_time, test_proba_over_time, bootstrap_oof_pred_proba_over_time
 
     def _fit_single(self, X, y, model_base, use_child_oof, time_limit=None, skip_oof=False, X_pseudo=None, y_pseudo=None, **kwargs):
         if self.is_fit():

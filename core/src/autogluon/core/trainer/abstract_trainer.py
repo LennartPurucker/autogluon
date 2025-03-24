@@ -2148,7 +2148,9 @@ class AbstractTrainer:
                         # logger.log(20, "Starting ES OOF computation...")
                         # TODO: add check if OOF is enabled for the model. If not, skip.
                         y = y.values if isinstance(y, pd.Series) else y
-                        model.compute_unbiased_oof(y=y,sample_weight=w, overwrite_oof=True)
+                        model.compute_unbiased_oof(y=y,sample_weight=w, overwrite_oof=True
+                                                   # , y_test=y_test, y_unbiased=model._params_aux_child['unbiased_val_data_for_curves']["y"]
+                        )
                         score_oof = model.score_with_oof(y=y, sample_weight=w)
 
                         logger.log(

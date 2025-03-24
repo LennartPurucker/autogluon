@@ -391,6 +391,7 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
 
         # start training loop:
         logger.log(15, f"Training tabular neural network for up to {num_epochs} epochs...")
+        num_epochs = 500
         total_updates = 0
         num_updates_per_epoch = max(round(len(train_dataset) / batch_size) + 1, 1)
         update_to_check_time = min(10, max(1, int(num_updates_per_epoch / 5)))
@@ -515,8 +516,14 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
                     break
 
                 if es_oof_flag:
+                    # y_pred_proba_unbiased = self.predict_proba(X=unbiased_val_data, _reset_threads=False)
+                    # y_pred_proba_test = self.predict_proba(X=test_dataset, _reset_threads=False)
+
+
                     es_oof_output = es_wrapper_oof.update(y=y_val, y_score=y_score, cur_round=epoch - 1, y_pred_proba=y_pred_proba_val,
-                                                          default_early_stop=early_stop, default_is_best=is_best)
+                                                          default_early_stop=early_stop, default_is_best=is_best,
+                                                          # meta_info=[y_pred_proba_unbiased, y_pred_proba_test]
+                                                          )
                     early_stop_oof = es_oof_output.early_stop
                 else:
                     early_stop_oof = True

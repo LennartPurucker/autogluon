@@ -604,14 +604,34 @@ class ESWrapperOOF:
         y_pred_proba: np.ndarray,
         default_early_stop: bool | None = None,
         default_is_best: bool | None = None,
+        # meta_info: list | None = None,
     ) -> ESOOFOutput:
         assert default_early_stop is not None, f"For new exp, we need outer early stop, {default_early_stop}"
         assert default_is_best is not None, f"For new exp, we need outer is_best, {default_is_best}"
 
         if self.y_pred_proba_val_best_oof is None:
             self.y_pred_proba_val_best_oof = []
+            num_bootstraps = 50
+            self._splits = []
+            self._scores = []
+            for i in range(num_bootstraps):
+                self._splits.append(np.random.choice(len(y), size=len(y), replace=True))
+                self._scores.append(float("-inf"))
 
-        self.y_pred_proba_val_best_oof.append((y_pred_proba, default_is_best))
+        best_list = []
+        for split_idx, train_index in enumerate(self._splits):
+            bootstrap_score = self.score_func(
+                y[train_index],
+                y_score[train_index],
+            )
+            is_best = bootstrap_score > self._scores[split_idx]
+            if is_best:
+                self._scores[split_idx] = bootstrap_score
+            best_list.append(is_best)
+
+        self.y_pred_proba_val_best_oof.append((y_pred_proba, best_list, default_is_best))
+
+        # self.y_pred_proba_val_best_oof.append((y_pred_proba, meta_info, best_list  , default_is_best))
 
         return ESOOFOutput(early_stop=default_early_stop)
 
