@@ -389,16 +389,36 @@ class CatBoostModel(AbstractModel):
         return final_iters
 
     def _predict_proba(self, X, **kwargs):
-        if self.problem_type != SOFTCLASS:
-            return super()._predict_proba(X, **kwargs)
-        # For SOFTCLASS problems, manually transform predictions into probabilities via softmax
         X = self.preprocess(X, **kwargs)
-        y_pred_proba = self.model.predict(X, prediction_type="RawFormulaVal")
-        y_pred_proba = np.exp(y_pred_proba)
-        y_pred_proba = np.multiply(y_pred_proba, 1 / np.sum(y_pred_proba, axis=1)[:, np.newaxis])
-        if y_pred_proba.shape[1] == 2:
-            y_pred_proba = y_pred_proba[:, 1]
-        return y_pred_proba
+        predict_kwargs = self._predict_thread_kwargs()
+        if self.problem_type == SOFTCLASS:
+            # For SOFTCLASS problems, manually transform predictions into probabilities via softmax
+            y_pred_proba = self.model.predict(X, prediction_type="RawFormulaVal", **predict_kwargs)
+            y_pred_proba = np.exp(y_pred_proba)
+            y_pred_proba = np.multiply(y_pred_proba, 1 / np.sum(y_pred_proba, axis=1)[:, np.newaxis])
+            if y_pred_proba.shape[1] == 2:
+                y_pred_proba = y_pred_proba[:, 1]
+            return y_pred_proba
+        if self.problem_type == REGRESSION:
+            return self.model.predict(X, **predict_kwargs)
+        if self.problem_type == QUANTILE:
+            y_pred = self.model.predict(X, **predict_kwargs)
+            return y_pred.reshape([-1, len(self.quantile_levels)])
+        y_pred_proba = self.model.predict_proba(X, **predict_kwargs)
+        return self._convert_proba_to_unified_form(y_pred_proba)
+
+    def _predict_thread_kwargs(self) -> dict:
+        """Keyword arguments that pin CatBoost's predict to the CPU budget the model was fit with.
+
+        CatBoost's predict methods default to `thread_count=-1`, every core on the machine, independent of
+        the `thread_count` used at fit. The fit budget is read from the fit metadata, which is recorded for
+        models fit directly, as bagged children, and survives save and load. Without a recorded budget the
+        kwargs stay empty and CatBoost's default applies. The thread count does not change the predictions.
+        """
+        num_cpus = self.fit_num_cpus if self._is_fit_metadata_registered else None
+        if num_cpus is None:
+            return {}
+        return {"thread_count": num_cpus}
 
     def _get_early_stopping_rounds(self, num_rows_train, strategy="auto"):
         return get_early_stopping_rounds(num_rows_train=num_rows_train, strategy=strategy)
