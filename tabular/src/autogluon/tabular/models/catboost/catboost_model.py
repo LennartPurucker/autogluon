@@ -411,9 +411,10 @@ class CatBoostModel(AbstractModel):
         """Keyword arguments that pin CatBoost's predict to the CPU budget the model was fit with.
 
         CatBoost's predict methods default to `thread_count=-1`, every core on the machine, independent of
-        the `thread_count` used at fit. The fit budget is read from the fit metadata, which is recorded for
-        models fit directly, as bagged children, and survives save and load. Without a recorded budget the
-        kwargs stay empty and CatBoost's default applies. The thread count does not change the predictions.
+        the `thread_count` used at fit. The fit budget is read from the fit metadata, which `fit()` records
+        for models fit directly and for bagged children and which is pickled with the model, so it survives
+        save and load. Without a recorded budget the kwargs stay empty and CatBoost's default applies. The
+        thread count does not change the predictions.
         """
         num_cpus = self.fit_num_cpus if self._is_fit_metadata_registered else None
         if num_cpus is None:
