@@ -16,7 +16,6 @@ import pytest
 from autogluon.common import space
 from autogluon.common.utils.log_utils import verbosity2loglevel
 from autogluon.timeseries.dataset import TimeSeriesDataFrame
-from autogluon.timeseries.dataset.ts_dataframe import ITEMID, TIMESTAMP
 from autogluon.timeseries.metrics import DEFAULT_METRIC_NAME, MASE
 from autogluon.timeseries.models import DeepARModel, SimpleFeedForwardModel
 from autogluon.timeseries.models.ensemble import GreedyEnsemble
@@ -59,9 +58,7 @@ def test_when_predictor_called_then_training_is_performed(temp_model_path):
     assert "SimpleFeedForward" in predictor.model_names()
 
 
-@pytest.mark.parametrize(
-    "hyperparameters", TEST_HYPERPARAMETER_SETTINGS + CHRONOS_HYPERPARAMETER_SETTINGS + ["very_light"]
-)
+@pytest.mark.parametrize("hyperparameters", TEST_HYPERPARAMETER_SETTINGS + CHRONOS_HYPERPARAMETER_SETTINGS + ["light"])
 def test_given_hyperparameters_when_predictor_called_then_model_can_predict(temp_model_path, hyperparameters):
     predictor = TimeSeriesPredictor(path=temp_model_path, eval_metric="MAPE", prediction_length=3)
     predictor.fit(
@@ -91,9 +88,7 @@ def test_when_pathlib_path_provided_to_predictor_then_loaded_predictor_can_predi
     assert isinstance(predictions, TimeSeriesDataFrame)
 
 
-@pytest.mark.parametrize(
-    "hyperparameters", TEST_HYPERPARAMETER_SETTINGS + CHRONOS_HYPERPARAMETER_SETTINGS + ["very_light"]
-)
+@pytest.mark.parametrize("hyperparameters", TEST_HYPERPARAMETER_SETTINGS + CHRONOS_HYPERPARAMETER_SETTINGS + ["light"])
 def test_given_different_target_name_when_predictor_called_then_model_can_predict(temp_model_path, hyperparameters):
     df = TimeSeriesDataFrame(copy.copy(DUMMY_TS_DATAFRAME))
     df.rename(columns={"target": "mytarget"}, inplace=True)
@@ -136,8 +131,9 @@ def test_given_no_tuning_data_when_predictor_called_then_model_can_predict(temp_
 
 
 @pytest.mark.parametrize("hyperparameters", TEST_HYPERPARAMETER_SETTINGS)
+@pytest.mark.parametrize("tuning_data", [None, DUMMY_TS_DATAFRAME])
 def test_given_hyperparameters_and_quantiles_when_predictor_called_then_model_can_predict(
-    temp_model_path, hyperparameters
+    temp_model_path, hyperparameters, tuning_data
 ):
     predictor = TimeSeriesPredictor(
         path=temp_model_path,
@@ -149,11 +145,12 @@ def test_given_hyperparameters_and_quantiles_when_predictor_called_then_model_ca
     predictor.fit(
         train_data=DUMMY_TS_DATAFRAME,
         hyperparameters=hyperparameters,
-        tuning_data=DUMMY_TS_DATAFRAME,
+        tuning_data=tuning_data,
     )
     predictions = predictor.predict(DUMMY_TS_DATAFRAME)
 
     assert tuple(predictions.columns) == ("mean", "0.1", "0.4", "0.9")
+    assert np.isfinite(predictions.to_numpy()).all()
 
 
 @pytest.mark.parametrize("eval_metric", ["MAPE", None])
@@ -509,6 +506,26 @@ def test_when_some_train_time_series_contain_only_nans_then_they_are_removed_fro
         assert all(learner_train_data.item_ids == [1])
 
 
+@pytest.mark.parametrize("preset", ["experimental_quality", "experimental"])
+def test_when_experimental_preset_used_then_experimental_hyperparameters_are_passed_to_learner(
+    temp_model_path, preset
+):
+    predictor = TimeSeriesPredictor(path=temp_model_path)
+    with mock.patch("autogluon.timeseries.learner.TimeSeriesLearner.fit") as mock_learner_fit:
+        predictor.fit(DUMMY_TS_DATAFRAME, presets=preset)
+        assert mock_learner_fit.call_args[1]["hyperparameters"] == "experimental"
+
+
+def test_when_fast_training_preset_used_then_warning_logged_and_falls_back_to_medium_quality(temp_model_path):
+    predictor = TimeSeriesPredictor(path=temp_model_path)
+    with mock.patch("autogluon.timeseries.learner.TimeSeriesLearner.fit") as mock_learner_fit:
+        with mock.patch("autogluon.timeseries.predictor.logger.warning") as mock_warning:
+            predictor.fit(DUMMY_TS_DATAFRAME, presets="fast_training")
+        assert any("fast_training" in str(call) and "deprecated" in str(call) for call in mock_warning.call_args_list)
+        # medium_quality uses the "light" hyperparameter preset
+        assert mock_learner_fit.call_args[1]["hyperparameters"] == "light"
+
+
 def test_when_all_train_time_series_contain_only_nans_then_exception_is_raised(temp_model_path):
     predictor = TimeSeriesPredictor(path=temp_model_path)
     train_data = DUMMY_TS_DATAFRAME.copy()
@@ -540,7 +557,7 @@ def test_when_fit_receives_only_future_data_as_tuning_data_then_exception_is_rai
     prediction_length = 3
     predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=prediction_length)
     future_data = DUMMY_TS_DATAFRAME.slice_by_timestep(-prediction_length, None)
-    with pytest.raises(ValueError, match="tuning\_data includes both historical and future data"):
+    with pytest.raises(ValueError, match=r"tuning_data includes both historical and future data"):
         predictor.fit(DUMMY_TS_DATAFRAME, hyperparameters={"Naive": {}}, tuning_data=future_data)
 
 
@@ -571,7 +588,10 @@ def test_given_data_is_in_str_format_then_predictor_works(temp_model_path, tmp_p
     assert isinstance(predictions, TimeSeriesDataFrame)
 
 
-@pytest.mark.parametrize("rename_columns", [{TIMESTAMP: "custom_timestamp"}, {ITEMID: "custom_item_id"}])
+@pytest.mark.parametrize(
+    "rename_columns",
+    [{TimeSeriesDataFrame.TIMESTAMP: "custom_timestamp"}, {TimeSeriesDataFrame.ITEMID: "custom_item_id"}],
+)
 def test_given_data_cannot_be_interpreted_as_tsdf_then_exception_raised(temp_model_path, rename_columns):
     df = pd.DataFrame(DUMMY_TS_DATAFRAME.reset_index())
     df = df.rename(columns=rename_columns)
@@ -599,6 +619,16 @@ def test_given_data_is_not_sorted_then_preprocessed_data_is_sorted(temp_model_pa
     assert ts_df_processed.index.is_monotonic_increasing
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("-inf")])
+def test_when_data_passed_to_predictor_contains_infs_then_they_are_replaced_with_nans(temp_model_path, value):
+    ts_df = DUMMY_TS_DATAFRAME.copy()
+    ts_df.iloc[5] = value
+    predictor = TimeSeriesPredictor(path=temp_model_path)
+    ts_df_processed = predictor._check_and_prepare_data_frame(ts_df)
+    assert not np.isinf(ts_df_processed).any(axis=None)
+    assert np.isnan(ts_df_processed).any(axis=None)
+
+
 def test_when_both_argument_aliases_are_passed_to_init_then_exception_is_raised(temp_model_path):
     with pytest.raises(ValueError, match="Please specify at most one of these arguments"):
         TimeSeriesPredictor(path=temp_model_path, target="custom_target", label="custom_target")
@@ -607,11 +637,6 @@ def test_when_both_argument_aliases_are_passed_to_init_then_exception_is_raised(
 def test_when_invalid_argument_passed_to_init_then_exception_is_raised(temp_model_path):
     with pytest.raises(TypeError, match="unexpected keyword argument 'invalid_argument'"):
         TimeSeriesPredictor(path=temp_model_path, invalid_argument=23)
-
-
-def test_when_ignore_time_index_passed_to_predictor_then_exception_is_raised(temp_model_path):
-    with pytest.raises(TypeError, match="has been deprecated"):
-        TimeSeriesPredictor(path=temp_model_path, ignore_time_index=True)
 
 
 def test_when_invalid_argument_passed_to_fit_then_exception_is_raised(temp_model_path):
@@ -655,6 +680,112 @@ def test_when_refit_full_is_passed_to_fit_then_refit_full_is_skipped(temp_model_
             refit_method.assert_not_called()
 
 
+@pytest.fixture
+def update_predictor_and_data(temp_model_path):
+    df = get_data_frame_with_variable_lengths({"A": 40, "B": 40, "C": 40}, freq="D")
+    train_data = df.slice_by_timestep(None, -5)
+    predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=3, verbosity=0).fit(
+        train_data,
+        hyperparameters={"Naive": {}, "Average": {}, "SeasonalNaive": {}},
+        num_val_windows=2,
+    )
+    yield predictor, df
+
+
+def test_when_update_called_then_val_scores_change(update_predictor_and_data):
+    predictor, fresh_data = update_predictor_and_data
+    scores_before = predictor.leaderboard().set_index("model")["score_val"].to_dict()
+    predictor.update(fresh_data)
+    scores_after = predictor.leaderboard().set_index("model")["score_val"].to_dict()
+    assert set(scores_before) == set(scores_after)
+    assert any(scores_before[m] != scores_after[m] for m in scores_before)
+
+
+def test_when_update_called_then_ensemble_is_refit_and_all_models_can_predict(update_predictor_and_data):
+    predictor, fresh_data = update_predictor_and_data
+    updated_models = predictor.update(fresh_data)
+    assert "WeightedEnsemble" in updated_models
+    weights_after = predictor._trainer.load_model("WeightedEnsemble").model_to_weight
+    # ensemble was re-fit: weights are re-derived over the base models on the updated validation window
+    base_model_names = set(predictor._trainer.get_model_names(layer=0))
+    assert weights_after and set(weights_after).issubset(base_model_names)
+    for model in predictor.model_names():
+        preds = predictor.predict(fresh_data, model=model)
+        assert isinstance(preds, TimeSeriesDataFrame)
+        assert len(preds) == fresh_data.num_items * predictor.prediction_length
+
+
+def test_when_predict_called_before_update_then_best_model_is_recomputed_after_update(update_predictor_and_data):
+    predictor, fresh_data = update_predictor_and_data
+    predictor.predict(fresh_data)  # caches model_best before update
+    predictor.update(fresh_data)
+    assert predictor._trainer.model_best is None
+    assert predictor.model_best == predictor._trainer.get_model_best()
+
+
+def test_when_update_called_and_predictor_reloaded_then_updated_scores_persist(
+    update_predictor_and_data, temp_model_path
+):
+    _, fresh_data = update_predictor_and_data
+    df = get_data_frame_with_variable_lengths({"A": 40, "B": 40}, freq="D")
+    predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=3, verbosity=0).fit(
+        df.slice_by_timestep(None, -5),
+        hyperparameters={"Naive": {}, "Average": {}},
+        num_val_windows=1,
+    )
+    predictor.update(df)
+    scores_before = predictor.leaderboard().set_index("model")["score_val"].to_dict()
+    reloaded = TimeSeriesPredictor.load(temp_model_path)
+    scores_after = reloaded.leaderboard().set_index("model")["score_val"].to_dict()
+    assert scores_before == scores_after
+
+
+def test_when_update_called_after_refit_full_then_exception_is_raised(temp_model_path):
+    df = get_data_frame_with_variable_lengths({"A": 40, "B": 40}, freq="D")
+    predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=3, verbosity=0).fit(
+        df.slice_by_timestep(None, -5),
+        hyperparameters={"Naive": {}},
+        num_val_windows=1,
+    )
+    predictor.refit_full()
+    with pytest.raises(NotImplementedError, match="refit_full"):
+        predictor.update(df)
+
+
+def test_when_update_called_repeatedly_with_multiple_val_windows_then_no_error(update_predictor_and_data):
+    predictor, fresh_data = update_predictor_and_data
+    assert sum(predictor._trainer.num_val_windows) > 1
+    # Simulate the sliding-window evaluation flow: each update reveals one more recent window.
+    for end in [-4, -2, None]:
+        updated_models = predictor.update(fresh_data.slice_by_timestep(None, end))
+    assert "WeightedEnsemble" in updated_models
+    preds = predictor.predict(fresh_data)
+    assert len(preds) == fresh_data.num_items * predictor.prediction_length
+
+
+def test_when_update_called_with_short_series_then_they_are_filtered(temp_model_path):
+    df = get_data_frame_with_variable_lengths({"A": 40, "B": 40, "SHORT": 4}, freq="D")
+    predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=3, verbosity=0).fit(
+        df.slice_by_timestep(None, -5).query("item_id != 'SHORT'"),
+        hyperparameters={"Naive": {}},
+        num_val_windows=1,
+    )
+    predictor.update(df)  # should not raise; short series filtered out
+
+
+@pytest.mark.parametrize("update_items", [["A", "B", "C"], ["A"]])
+def test_when_update_items_differ_from_training_then_only_common_items_are_used(temp_model_path, update_items):
+    df = get_data_frame_with_variable_lengths({"A": 40, "B": 40}, freq="D")
+    predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=3, verbosity=0).fit(
+        df.slice_by_timestep(None, -5),
+        hyperparameters={"Naive": {}},
+        num_val_windows=1,
+    )
+    update_data = get_data_frame_with_variable_lengths({item: 40 for item in update_items}, freq="D")
+    updated_models = predictor.update(update_data)  # extra items ignored, missing items dropped, no error
+    assert "Naive" in updated_models
+
+
 def test_when_excluded_model_names_provided_then_excluded_models_are_not_trained(temp_model_path):
     predictor = TimeSeriesPredictor(path=temp_model_path)
     predictor.fit(
@@ -667,26 +798,6 @@ def test_when_excluded_model_names_provided_then_excluded_models_are_not_trained
     )
     leaderboard = predictor.leaderboard()
     assert leaderboard["model"].values == ["SimpleFeedForward"]
-
-
-@pytest.mark.parametrize("method_name", ["leaderboard", "predict", "evaluate"])
-@pytest.mark.parametrize("use_cache", [True, False])
-def test_when_use_cache_is_set_to_false_then_cached_predictions_are_ignored(temp_model_path, use_cache, method_name):
-    predictor = TimeSeriesPredictor(path=temp_model_path, cache_predictions=True).fit(
-        DUMMY_TS_DATAFRAME, hyperparameters={"Naive": {}}
-    )
-    # Cache predictions
-    predictor.predict(DUMMY_TS_DATAFRAME)
-
-    with mock.patch(
-        "autogluon.timeseries.trainer.TimeSeriesTrainer._get_cached_pred_dicts"
-    ) as mock_get_cached_pred_dicts:
-        mock_get_cached_pred_dicts.return_value = {}, {}
-        getattr(predictor, method_name)(DUMMY_TS_DATAFRAME, use_cache=use_cache)
-        if use_cache:
-            mock_get_cached_pred_dicts.assert_called()
-        else:
-            mock_get_cached_pred_dicts.assert_not_called()
 
 
 @pytest.fixture(
@@ -751,7 +862,9 @@ def irregular_timestamp_data_frame(request):
     for i, ts in enumerate(request.param):
         for t in ts:
             df_tuples.append((i, pd.Timestamp(t), np.random.rand()))
-    return TimeSeriesDataFrame.from_data_frame(pd.DataFrame(df_tuples, columns=[ITEMID, TIMESTAMP, "target"]))
+    return TimeSeriesDataFrame.from_data_frame(
+        pd.DataFrame(df_tuples, columns=[TimeSeriesDataFrame.ITEMID, TimeSeriesDataFrame.TIMESTAMP, "target"])
+    )
 
 
 def test_given_irregular_time_series_when_predictor_called_with_freq_then_predictor_can_predict(
@@ -903,30 +1016,6 @@ def test_given_short_and_long_series_in_train_data_and_tuning_data_when_fit_call
         learner_fit_kwargs = learner_fit.call_args[1]
         item_ids_received_by_learner = learner_fit_kwargs["train_data"].item_ids
         assert (item_ids_received_by_learner == ["long_series_1"]).all()
-
-
-@pytest.mark.parametrize("num_val_windows", [1, 3, 5])
-def test_given_tuning_data_when_fit_called_then_num_val_windows_is_set_to_zero(temp_model_path, num_val_windows):
-    predictor = TimeSeriesPredictor(path=temp_model_path)
-    with mock.patch("autogluon.timeseries.learner.TimeSeriesLearner.fit") as learner_fit:
-        predictor.fit(DUMMY_TS_DATAFRAME, tuning_data=DUMMY_TS_DATAFRAME, num_val_windows=num_val_windows)
-        learner_fit_kwargs = learner_fit.call_args[1]
-        assert learner_fit_kwargs["val_splitter"].num_val_windows == 0
-
-
-@pytest.mark.parametrize("prediction_length", [1, 5, 7])
-@pytest.mark.parametrize("val_step_size", [1, 3])
-@pytest.mark.parametrize("original_num_val_windows, expected_num_val_windows", [(4, 1), (4, 3), (1, 1), (4, 4)])
-def test_given_num_val_windows_too_high_for_given_data_then_num_val_windows_is_reduced(
-    temp_model_path, prediction_length, val_step_size, original_num_val_windows, expected_num_val_windows
-):
-    predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=prediction_length)
-    min_val_length = predictor._min_train_length + prediction_length + (expected_num_val_windows - 1) * val_step_size
-    df = get_data_frame_with_variable_lengths({item_id: min_val_length for item_id in ["A", "B", "C"]})
-    reduced_num_val_windows = predictor._reduce_num_val_windows_if_necessary(
-        df, original_num_val_windows=original_num_val_windows, val_step_size=val_step_size
-    )
-    assert reduced_num_val_windows == expected_num_val_windows
 
 
 @pytest.mark.parametrize("prediction_length", [1, 7])
@@ -1705,7 +1794,8 @@ def test_when_feature_importance_called_with_improvements_then_improvements_are_
             expected_score /= 0.22
 
         assert mock_evaluate.call_count == len(scores_returned) * (num_iterations if method == "permutation" else 1)
-        assert np.allclose(feature_importance["importance"], expected_score, atol=1e-3)
+        # Features with highest importance are listed first
+        assert np.allclose(feature_importance["importance"], sorted(expected_score, reverse=True), atol=1e-3)
 
 
 @pytest.mark.parametrize("num_iterations", [1, 2, 5])
@@ -1967,3 +2057,556 @@ def test_when_seasonal_period_is_provided_to_predictor_then_eval_metric_uses_it_
         predictor.evaluate(DUMMY_TS_DATAFRAME)
         predictor.leaderboard(DUMMY_TS_DATAFRAME)
         assert mock_save_past_metrics.call_args[1]["seasonal_period"] == expected_seasonal_period
+
+
+@pytest.mark.parametrize(
+    "data, num_val_windows, expected_len",
+    [
+        (None, None, 3),
+        (DUMMY_TS_DATAFRAME, 2, 2),
+        (DUMMY_TS_DATAFRAME, None, 1),
+    ],
+)
+def test_when_backtest_predictions_and_targets_called_then_metrics_can_be_computed(
+    temp_model_path, data, num_val_windows, expected_len
+):
+    predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=4)
+    num_val_windows_during_fit = 3
+    predictor.fit(
+        DUMMY_TS_DATAFRAME, hyperparameters=DUMMY_HYPERPARAMETERS, num_val_windows=num_val_windows_during_fit
+    )
+
+    predictions = predictor.backtest_predictions(data, num_val_windows=num_val_windows)
+    targets = predictor.backtest_targets(data, num_val_windows=num_val_windows)
+
+    assert isinstance(predictions, list) and isinstance(targets, list)
+    assert len(predictions) == len(targets) == expected_len
+    for pred, tgt in zip(predictions, targets):
+        assert isinstance(pred, TimeSeriesDataFrame) and isinstance(tgt, TimeSeriesDataFrame)
+        metric_value = predictor.eval_metric(tgt, pred)
+        assert isinstance(metric_value, float) and np.isfinite(metric_value)
+
+
+@pytest.mark.parametrize("enable_ensemble", [True, False])
+def test_when_backtest_predictions_called_with_multiple_models_then_dict_is_returned(temp_model_path, enable_ensemble):
+    predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=2)
+    predictor.fit(DUMMY_TS_DATAFRAME, hyperparameters=DUMMY_HYPERPARAMETERS, enable_ensemble=enable_ensemble)
+    model_names = predictor.model_names()
+    assert len(model_names) == (len(DUMMY_HYPERPARAMETERS) + int(enable_ensemble))
+    predictions = predictor.backtest_predictions(model=model_names)
+    assert isinstance(predictions, dict)
+    for model_preds in predictions.values():
+        assert isinstance(model_preds, list) and all(isinstance(p, TimeSeriesDataFrame) for p in model_preds)
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "predict",
+        "evaluate",
+        "leaderboard",
+        "backtest_predictions",
+        "backtest_targets",
+        "feature_importance",
+        "model_names",
+        "persist",
+        "fit_summary",
+        "refit_full",
+    ],
+)
+def test_when_method_called_before_fit_then_exception_is_raised(temp_model_path, method):
+    predictor = TimeSeriesPredictor(path=temp_model_path)
+    with pytest.raises(AssertionError, match="Predictor is not fit"):
+        args = [DUMMY_TS_DATAFRAME] if method in ["predict", "evaluate"] else []
+        getattr(predictor, method)(*args)
+
+
+class TestExportModel:
+    def test_when_export_model_called_before_fit_then_exception_is_raised(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        with pytest.raises(AssertionError, match="Predictor is not fit"):
+            predictor.export_model(Path(temp_model_path) / "export", model="Naive")
+
+    def test_when_model_does_not_support_export_then_exception_lists_supported_models(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        predictor.fit(DUMMY_TS_DATAFRAME, hyperparameters={"Naive": {}})
+
+        with pytest.raises(
+            NotImplementedError, match="Naive does not support export_model.*Trained models that support export"
+        ):
+            predictor.export_model(Path(temp_model_path) / "export", model="Naive")
+
+    def test_when_unknown_model_name_provided_then_exception_is_raised(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        predictor.fit(DUMMY_TS_DATAFRAME, hyperparameters={"Naive": {}})
+
+        with pytest.raises(KeyError, match="not found"):
+            predictor.export_model(Path(temp_model_path) / "export", model="NonExistentModel")
+
+    def test_when_model_provided_then_that_model_is_exported(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        predictor.fit(DUMMY_TS_DATAFRAME, hyperparameters={"Naive": {}})
+
+        with mock.patch(
+            "autogluon.timeseries.models.local.naive.NaiveModel.export_model", return_value="dummy_path"
+        ) as mock_export:
+            predictor.export_model(Path(temp_model_path) / "export", model="Naive")
+
+        assert mock_export.call_count == 1
+
+
+class TestMultilayerValidationAndNormalization:
+    def test_given_int_num_val_windows_when_normalized_then_converted_to_tuple(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        result = predictor._normalize_num_val_windows_input(num_val_windows=5, tuning_data_provided=False)
+        assert result == (5,)
+
+    def test_given_negative_values_when_normalized_then_validation_error_raised(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        with pytest.raises(ValueError, match="positive integers"):
+            predictor._normalize_num_val_windows_input(num_val_windows=(2, -1, 3), tuning_data_provided=False)
+
+    def test_given_empty_tuple_when_normalized_then_validation_error_raised(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        with pytest.raises(ValueError, match="cannot be empty"):
+            predictor._normalize_num_val_windows_input(num_val_windows=(), tuning_data_provided=False)
+
+    def test_given_list_instead_of_tuple_when_normalized_then_type_error_raised(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        with pytest.raises(TypeError, match="must be int or tuple"):
+            predictor._normalize_num_val_windows_input(
+                num_val_windows=[2, 3],
+                tuning_data_provided=False,  # type: ignore
+            )
+
+    @pytest.mark.parametrize("median_length, val_step_size", [(10.0, 1), (10.0, 2), (20.0, 5)])
+    def test_given_short_time_series_when_reduced_then_num_val_windows_reduced(
+        self, temp_model_path, median_length, val_step_size
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=1)
+        max_allowed = (median_length - predictor._min_train_length - predictor.prediction_length) // val_step_size + 1
+        result = predictor._reduce_num_val_windows_if_necessary(
+            num_val_windows=(3, 4),
+            val_step_size=val_step_size,
+            median_time_series_length=median_length,
+            tuning_data_provided=False,
+        )
+        assert sum(result) <= max_allowed
+        assert len(result) <= 2
+
+    def test_given_very_short_series_when_reduced_then_layers_trimmed_to_max_allowed(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=1)
+        result = predictor._reduce_num_val_windows_if_necessary(
+            num_val_windows=(2, 3), val_step_size=1, median_time_series_length=7.0, tuning_data_provided=False
+        )
+        assert sum(result) == 2
+        assert result == (1, 1)
+
+    def test_given_very_short_series_when_reduced_then_layers_deleted_to_max_allowed(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=1)
+        # median_length=6.5, min_train_length=5, prediction_length=1
+        # Can fit: (6.5 - 5 - 1) / 1 + 1 = 1.5 -> 1 window
+        result = predictor._reduce_num_val_windows_if_necessary(
+            num_val_windows=(2, 3), val_step_size=1, median_time_series_length=6.5, tuning_data_provided=False
+        )
+        # Should reduce from 2 layers to 1 layer with 1 window
+        assert sum(result) == 1
+        assert len(result) == 1
+        assert result == (1,)
+
+    def test_given_mismatched_lengths_when_explicitly_provided_then_value_error_raised(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        with pytest.raises(ValueError, match="Length mismatch"):
+            predictor.fit(
+                DUMMY_TS_DATAFRAME,
+                num_val_windows=(2, 3),
+                ensemble_hyperparameters=[{"WeightedEnsemble": {}}],
+                hyperparameters={"Naive": {}},
+            )
+
+    def test_given_dict_ensemble_hyperparameters_when_validated_then_converted_to_list(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        num_val_windows, ensemble_hyperparameters = predictor._validate_and_normalize_validation_and_ensemble_inputs(
+            num_val_windows=2,
+            ensemble_hyperparameters={"WeightedEnsemble": {}},
+            val_step_size=1,
+            median_timeseries_length=100.0,
+            tuning_data_provided=False,
+        )
+        assert num_val_windows == (2,)
+        assert ensemble_hyperparameters == [{"WeightedEnsemble": {}}]
+
+    def test_given_reduced_layers_when_validated_then_ensemble_hyperparameters_trimmed(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=1)
+        # Short series will reduce (3, 4) to fewer windows
+        num_val_windows, ensemble_hyperparameters = predictor._validate_and_normalize_validation_and_ensemble_inputs(
+            num_val_windows=(3, 4),
+            ensemble_hyperparameters=[
+                {"WeightedEnsemble": {}},
+                {"PerformanceWeightedEnsemble": {}},
+            ],
+            val_step_size=1,
+            median_timeseries_length=10.0,
+            tuning_data_provided=False,
+        )
+        assert ensemble_hyperparameters is not None
+        assert len(ensemble_hyperparameters) == len(num_val_windows)
+        assert len(ensemble_hyperparameters) <= 2
+
+    def test_given_none_ensemble_hyperparameters_when_validated_then_none_returned(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        num_val_windows, ensemble_hyperparameters = predictor._validate_and_normalize_validation_and_ensemble_inputs(
+            num_val_windows=(2, 3),
+            ensemble_hyperparameters=None,
+            val_step_size=1,
+            median_timeseries_length=100.0,
+            tuning_data_provided=False,
+        )
+        assert num_val_windows == (2, 3)
+        assert ensemble_hyperparameters is None
+
+    @pytest.mark.parametrize("num_val_windows", [1, 3, 5])
+    def test_given_tuning_data_when_fit_called_then_num_val_windows_is_set_to_one(
+        self, temp_model_path, num_val_windows
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        with mock.patch("autogluon.timeseries.learner.TimeSeriesLearner.fit") as learner_fit:
+            predictor.fit(DUMMY_TS_DATAFRAME, tuning_data=DUMMY_TS_DATAFRAME, num_val_windows=num_val_windows)
+            learner_fit_kwargs = learner_fit.call_args[1]
+            assert learner_fit_kwargs["num_val_windows"] == (1,)
+
+    @pytest.mark.parametrize("prediction_length", [1, 5, 7])
+    @pytest.mark.parametrize("val_step_size", [1, 3])
+    @pytest.mark.parametrize("original_num_val_windows, expected_num_val_windows", [(4, 1), (4, 3), (1, 1), (4, 4)])
+    def test_given_num_val_windows_too_high_for_given_data_then_num_val_windows_is_reduced(
+        self, temp_model_path, prediction_length, val_step_size, original_num_val_windows, expected_num_val_windows
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=prediction_length)
+        min_val_length = (
+            predictor._min_train_length + prediction_length + (expected_num_val_windows - 1) * val_step_size
+        )
+        df = get_data_frame_with_variable_lengths({item_id: min_val_length for item_id in ["A", "B", "C"]})
+        median_length = df.num_timesteps_per_item().median()
+        reduced_num_val_windows = predictor._reduce_num_val_windows_if_necessary(
+            num_val_windows=(original_num_val_windows,),
+            val_step_size=val_step_size,
+            median_time_series_length=median_length,
+            tuning_data_provided=False,
+        )
+        assert reduced_num_val_windows == (expected_num_val_windows,)
+
+    def test_given_tuning_data_provided_when_normalized_then_last_element_set_to_one(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        result = predictor._normalize_num_val_windows_input(num_val_windows=(2, 3, 5), tuning_data_provided=True)
+        assert result == (2, 3, 1)
+
+    def test_given_tuning_data_provided_when_reduced_then_last_element_ignored_in_calculation(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=1)
+        result = predictor._reduce_num_val_windows_if_necessary(
+            num_val_windows=(3, 100),  # 100 cannot be provided by Predictor, but even if it is, it is ignored
+            val_step_size=1,
+            median_time_series_length=10.0,
+            tuning_data_provided=True,
+        )
+        assert result == (3, 100)
+
+    def test_given_tuning_data_when_validated_then_last_num_val_windows_set_to_one(self, temp_model_path):
+        predictor = TimeSeriesPredictor(path=temp_model_path)
+        num_val_windows, _ = predictor._validate_and_normalize_validation_and_ensemble_inputs(
+            num_val_windows=(3, 5),
+            ensemble_hyperparameters=[{"GreedyEnsemble": {}}, {"WeightedEnsemble": {}}],
+            val_step_size=1,
+            median_timeseries_length=100.0,
+            tuning_data_provided=True,
+        )
+        assert num_val_windows == (3, 1)
+
+
+class TestPredictorMultilayerEnsemble:
+    @pytest.fixture()
+    def multilayer_hyperparameters(self):
+        return {"Naive": {}, "SeasonalNaive": {}}
+
+    @pytest.fixture()
+    def multilayer_ensemble_hyperparameters(self):
+        return [
+            {"WeightedEnsemble": [{"ensemble_size": 2}, {"ensemble_size": 2}]},
+            {"WeightedEnsemble": {"ensemble_size": 2}},
+        ]
+
+    @pytest.fixture()
+    def fitted_predictor(
+        self, temp_model_path, patch_naive_models, multilayer_hyperparameters, multilayer_ensemble_hyperparameters
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=2)
+        predictor.fit(
+            DUMMY_TS_DATAFRAME,
+            hyperparameters=multilayer_hyperparameters,
+            ensemble_hyperparameters=multilayer_ensemble_hyperparameters,
+            num_val_windows=(2, 3),
+        )
+        return predictor
+
+    def test_given_multilayer_params_when_predictor_fit_then_multiple_ensembles_created(self, fitted_predictor):
+        model_names = fitted_predictor.model_names()
+        ensemble_models = [m for m in model_names if "Ensemble" in m]
+        assert len(ensemble_models) == 3
+
+    def test_given_multilayer_ensembles_when_predict_called_then_predictions_returned(self, fitted_predictor):
+        predictions = fitted_predictor.predict(DUMMY_TS_DATAFRAME)
+        assert isinstance(predictions, TimeSeriesDataFrame)
+
+    def test_given_multilayer_ensembles_when_saved_and_loaded_then_loaded_predictor_can_predict(
+        self, fitted_predictor
+    ):
+        predictions_original = fitted_predictor.predict(DUMMY_TS_DATAFRAME)
+
+        loaded_predictor = TimeSeriesPredictor.load(fitted_predictor.path)
+        predictions_loaded = loaded_predictor.predict(DUMMY_TS_DATAFRAME)
+
+        assert isinstance(predictions_loaded, TimeSeriesDataFrame)
+        assert predictions_loaded.index.equals(predictions_original.index)
+        assert not np.any(np.isnan(predictions_loaded.to_numpy()))
+
+    def test_given_multilayer_ensembles_when_leaderboard_called_then_all_ensembles_included(self, fitted_predictor):
+        leaderboard = fitted_predictor.leaderboard()
+        ensemble_models = leaderboard[leaderboard["model"].str.contains("Ensemble")]
+        assert len(leaderboard) == 5
+        assert len(ensemble_models) == 3
+
+    def test_given_multilayer_ensembles_when_leaderboard_called_then_all_ensembles_have_layer_ids(
+        self, fitted_predictor
+    ):
+        leaderboard = fitted_predictor.leaderboard()
+        assert len(leaderboard[leaderboard["model"].str.contains("L2")]) == 2
+        assert len(leaderboard[leaderboard["model"].str.contains("L3")]) == 1
+
+    def test_given_multilayer_ensembles_when_saved_and_loaded_then_loaded_predictor_computes_new_leaderboard(
+        self, fitted_predictor
+    ):
+        loaded_predictor = TimeSeriesPredictor.load(fitted_predictor.path)
+        test_data = get_data_frame_with_variable_lengths({"A": 30, "B": 30, "C": 30})
+        leaderboard = loaded_predictor.leaderboard(test_data)
+
+        ensemble_models = leaderboard[leaderboard["model"].str.contains("Ensemble")]
+        assert len(leaderboard) == 5
+        assert len(ensemble_models) == 3
+
+    def test_given_multilayer_ensembles_when_model_names_called_then_all_ensembles_included(self, fitted_predictor):
+        model_names = fitted_predictor.model_names()
+        ensemble_models = [m for m in model_names if "Ensemble" in m]
+        assert len(ensemble_models) >= 2
+        assert any("WeightedEnsemble" in m for m in ensemble_models)
+
+    def test_given_tuning_data_and_multilayer_when_fit_called_then_predictor_can_fit_and_predict(
+        self, temp_model_path, patch_naive_models, multilayer_hyperparameters, multilayer_ensemble_hyperparameters
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=2)
+        predictor.fit(
+            DUMMY_TS_DATAFRAME,
+            tuning_data=DUMMY_TS_DATAFRAME,
+            hyperparameters=multilayer_hyperparameters,
+            ensemble_hyperparameters=multilayer_ensemble_hyperparameters,
+            num_val_windows=(2, 3),
+        )
+        predictions = predictor.predict(DUMMY_TS_DATAFRAME)
+        assert isinstance(predictions, TimeSeriesDataFrame)
+        assert len(predictions) > 0
+
+    def test_given_short_series_and_multilayer_when_fit_called_then_layers_reduced_with_warning(
+        self, temp_model_path, patch_naive_models, multilayer_hyperparameters, multilayer_ensemble_hyperparameters
+    ):
+        short_data = get_data_frame_with_variable_lengths({"A": 6, "B": 6, "C": 6})
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=1)
+        predictor.fit(
+            short_data,
+            hyperparameters=multilayer_hyperparameters,
+            ensemble_hyperparameters=multilayer_ensemble_hyperparameters,
+            num_val_windows=(5, 5),
+        )
+
+        ensemble_models = [m for m in predictor.model_names() if "Ensemble" in m]
+        assert len(ensemble_models) < 3
+
+    def test_given_tuning_data_and_multilayer_when_fit_called_then_correct_num_val_windows_passed_to_learner(
+        self, temp_model_path, patch_naive_models, multilayer_hyperparameters, multilayer_ensemble_hyperparameters
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=2)
+        original_fit = predictor._learner.fit
+        captured_kwargs = {}
+
+        def capture_and_restore(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            predictor._learner.fit = original_fit
+            return original_fit(*args, **kwargs)
+
+        predictor._learner.fit = capture_and_restore
+        predictor.fit(
+            DUMMY_TS_DATAFRAME,
+            tuning_data=DUMMY_TS_DATAFRAME,
+            hyperparameters=multilayer_hyperparameters,
+            ensemble_hyperparameters=multilayer_ensemble_hyperparameters,
+            num_val_windows=(2, 3),
+        )
+
+        assert "num_val_windows" in captured_kwargs
+        assert captured_kwargs["num_val_windows"] == (2, 1)
+
+    def test_given_multilayer_ensembles_when_fit_called_then_top_layer_ensemble_has_best_score(
+        self, temp_model_path, multilayer_hyperparameters, multilayer_ensemble_hyperparameters
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=2)
+        predictor.fit(
+            DUMMY_TS_DATAFRAME,
+            hyperparameters=multilayer_hyperparameters,
+            ensemble_hyperparameters=multilayer_ensemble_hyperparameters,
+            num_val_windows=(2, 3),
+        )
+
+        leaderboard = predictor.leaderboard()
+        best_score = leaderboard.iloc[0]["score_val"]
+        l3_models = leaderboard[leaderboard["model"].str.contains("L3")]
+
+        assert len(l3_models) == 1
+        l3_score = l3_models.iloc[0]["score_val"]
+        assert np.isclose(l3_score, best_score)
+
+
+class TestAutoValidationSettings:
+    @pytest.mark.parametrize(
+        "num_items, median_length, prediction_length, ensemble_hps, expected_num_val_windows",
+        [
+            # Single layer: few items -> 5 windows, many items -> 2 windows
+            (10, 100, 5, None, (5,)),
+            (50, 100, 5, None, (3,)),
+            (150, 100, 5, None, (2,)),
+            # Multi-layer with enough windows: distribute across layers
+            (10, 100, 5, [{}, {}], (4, 1)),
+            (10, 100, 5, [{}, {}, {}], (3, 1, 1)),
+            # Multi-layer with limited windows: fewer layers get windows
+            (150, 100, 5, [{}, {}], (1, 1)),
+            # Very short data: only 1 window fits, reduce layers
+            (10, 12, 5, [{}, {}, {}], (1,)),
+        ],
+    )
+    def test_when_num_val_windows_auto_then_correct_distribution(
+        self, temp_model_path, num_items, median_length, prediction_length, ensemble_hps, expected_num_val_windows
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=prediction_length)
+        data = get_data_frame_with_variable_lengths({f"ts_{i}": median_length for i in range(num_items)}, freq="h")
+
+        with mock.patch("autogluon.timeseries.learner.TimeSeriesLearner.fit") as learner_fit:
+            predictor.fit(
+                data,
+                hyperparameters={"Naive": {}},
+                num_val_windows="auto",
+                ensemble_hyperparameters=ensemble_hps,
+            )
+            num_val_windows = learner_fit.call_args[1]["num_val_windows"]
+            ensemble_hps_received = learner_fit.call_args[1]["ensemble_hyperparameters"]
+
+            assert num_val_windows == expected_num_val_windows
+            if ensemble_hps is not None:
+                assert len(ensemble_hps_received) == len(num_val_windows)
+
+    @pytest.mark.parametrize(
+        "num_val_windows, expected_refit",
+        [
+            ((1,), 1),
+            ((2,), 1),
+            ((3,), 2),
+            ((5,), 2),
+            ((9,), 3),
+            ((2, 1), 2),
+            ((4, 1, 1), 2),
+            ((8, 1, 1), 3),
+        ],
+    )
+    def test_when_refit_auto_then_follows_sqrt_formula(self, temp_model_path, num_val_windows, expected_refit):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=3)
+        data = get_data_frame_with_variable_lengths({"ts_0": 50}, freq="h")
+
+        with mock.patch("autogluon.timeseries.learner.TimeSeriesLearner.fit") as learner_fit:
+            predictor.fit(
+                data,
+                hyperparameters={"Naive": {}},
+                num_val_windows=num_val_windows,
+                refit_every_n_windows="auto",
+            )
+            refit = learner_fit.call_args[1]["refit_every_n_windows"]
+            assert refit == expected_refit
+
+    @pytest.mark.parametrize(
+        "num_items, ensemble_hps, expected_num_val_windows",
+        [
+            (10, [{}, {}], (4, 1)),
+            (10, [{}, {}, {}], (3, 1, 1)),
+            (50, [{}, {}], (2, 1)),
+        ],
+    )
+    def test_when_tuning_data_with_auto_then_last_window_one(
+        self, temp_model_path, num_items, ensemble_hps, expected_num_val_windows
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=3)
+        data = get_data_frame_with_variable_lengths({f"ts_{i}": 50 for i in range(num_items)}, freq="h")
+
+        with mock.patch("autogluon.timeseries.learner.TimeSeriesLearner.fit") as learner_fit:
+            predictor.fit(
+                data,
+                hyperparameters={"Naive": {}},
+                num_val_windows="auto",
+                tuning_data=DUMMY_TS_DATAFRAME,
+                ensemble_hyperparameters=ensemble_hps,
+            )
+            num_val_windows = learner_fit.call_args[1]["num_val_windows"]
+            assert num_val_windows == expected_num_val_windows
+            assert num_val_windows[-1] == 1
+
+    @pytest.mark.parametrize(
+        "num_val_windows, expected_refit",
+        [
+            ((5,), 2),
+            ((3, 1, 1), 2),
+            ((2, 1), 2),
+        ],
+    )
+    def test_when_both_auto_then_refit_matches_sqrt(self, temp_model_path, num_val_windows, expected_refit):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=3)
+        data = get_data_frame_with_variable_lengths({f"ts_{i}": 50 for i in range(10)}, freq="h")
+
+        with mock.patch("autogluon.timeseries.learner.TimeSeriesLearner.fit") as learner_fit:
+            predictor.fit(
+                data,
+                hyperparameters={"Naive": {}},
+                num_val_windows=num_val_windows,
+                refit_every_n_windows="auto",
+            )
+            refit = learner_fit.call_args[1]["refit_every_n_windows"]
+            assert refit == expected_refit
+
+    @pytest.mark.parametrize(
+        "median_length, val_step_size, ensemble_hps, expected_num_val_windows",
+        [
+            # val_step_size affects max_windows calculation
+            (50, 5, None, (5,)),  # step_size=5 allows more windows
+            (50, 10, None, (4,)),  # step_size=10 allows fewer windows
+            (30, 5, [{}, {}], (2, 1)),  # multi-layer with small step
+            (30, 10, [{}, {}], (1, 1)),  # multi-layer with large step
+        ],
+    )
+    def test_when_val_step_size_varies_then_auto_adjusts_windows(
+        self, temp_model_path, median_length, val_step_size, ensemble_hps, expected_num_val_windows
+    ):
+        predictor = TimeSeriesPredictor(path=temp_model_path, prediction_length=5)
+        data = get_data_frame_with_variable_lengths({f"ts_{i}": median_length for i in range(10)}, freq="h")
+
+        with mock.patch("autogluon.timeseries.learner.TimeSeriesLearner.fit") as learner_fit:
+            predictor.fit(
+                data,
+                hyperparameters={"Naive": {}},
+                num_val_windows="auto",
+                val_step_size=val_step_size,
+                ensemble_hyperparameters=ensemble_hps,
+            )
+            num_val_windows = learner_fit.call_args[1]["num_val_windows"]
+            assert num_val_windows == expected_num_val_windows

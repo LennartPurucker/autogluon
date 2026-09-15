@@ -14,7 +14,6 @@ from pandas import DataFrame, Series
 
 from autogluon.common.features.types import R_BOOL, R_CATEGORY, R_FLOAT, R_INT
 from autogluon.common.utils.pandas_utils import get_approximate_df_mem_usage
-from autogluon.common.utils.resource_utils import ResourceManager
 from autogluon.common.utils.try_import import try_import_lightgbm
 from autogluon.core.constants import BINARY, MULTICLASS, QUANTILE, REGRESSION, SOFTCLASS
 from autogluon.core.models import AbstractModel
@@ -25,7 +24,9 @@ from .hyperparameters.parameters import DEFAULT_NUM_BOOST_ROUND, get_lgb_objecti
 from .hyperparameters.searchspaces import get_default_searchspace
 from .lgb_utils import construct_dataset, train_lgb_model
 
-warnings.filterwarnings("ignore", category=UserWarning, message="Starting from version")  # lightGBM brew libomp warning
+warnings.filterwarnings(
+    "ignore", category=UserWarning, message="Starting from version"
+)  # lightGBM brew libomp warning
 warnings.filterwarnings("ignore", category=FutureWarning, message="Dask dataframe query")  # lightGBM dask-expr warning
 logger = logging.getLogger(__name__)
 
@@ -40,19 +41,27 @@ class LGBModel(AbstractModel):
     Extra hyperparameter options:
         ag.early_stop : int, specifies the early stopping rounds. Defaults to an adaptive strategy. Recommended to keep default.
     """
+
     ag_key = "GBM"
     ag_name = "LightGBM"
     ag_priority = 90
-    ag_priority_by_problem_type = MappingProxyType({
-        SOFTCLASS: 100
-    })
+    ag_priority_by_problem_type = MappingProxyType({SOFTCLASS: 100})
+    seed_name = "seed"
+    seed_name_alt = ["seed_value", "random_seed", "random_state"]
+    _supported_problem_types = ["binary", "multiclass", "regression", "quantile", "softclass"]
+
+    _default_auxiliary_params_extra = dict(
+        valid_raw_types=[R_BOOL, R_INT, R_FLOAT, R_CATEGORY],
+    )
+    minimum_num_gpus = 0.5
+    default_resources_physical_cores_only = True
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
         self._features_internal_map = None
-        self._features_internal_list = None
         self._requires_remap = None
+        self._features_internal_lgbm = None
 
     def _set_default_params(self):
         default_params = get_param_baseline(problem_type=self.problem_type)
@@ -64,19 +73,20 @@ class LGBModel(AbstractModel):
 
     # Use specialized LightGBM metric if available (fast), otherwise use custom func generator
     def _get_stopping_metric_internal(self):
-        stopping_metric = lgb_utils.convert_ag_metric_to_lgbm(ag_metric_name=self.stopping_metric.name, problem_type=self.problem_type)
+        stopping_metric = lgb_utils.convert_ag_metric_to_lgbm(
+            ag_metric_name=self.stopping_metric.name, problem_type=self.problem_type
+        )
         if stopping_metric is None:
             stopping_metric = lgb_utils.func_generator(
-                metric=self.stopping_metric, is_higher_better=True, needs_pred_proba=not self.stopping_metric.needs_pred, problem_type=self.problem_type
+                metric=self.stopping_metric,
+                is_higher_better=True,
+                needs_pred_proba=not self.stopping_metric.needs_pred,
+                problem_type=self.problem_type,
             )
             stopping_metric_name = self.stopping_metric.name
         else:
             stopping_metric_name = stopping_metric
         return stopping_metric, stopping_metric_name
-
-    def _estimate_memory_usage(self, X: pd.DataFrame, **kwargs) -> int:
-        hyperparameters = self._get_model_params()
-        return self.estimate_memory_usage_static(X=X, problem_type=self.problem_type, num_classes=self.num_classes, hyperparameters=hyperparameters, **kwargs)
 
     # FIXME: Don't use `hyperparameters.get("max_bins", 255)`, instead get the defaults all at once!
     @classmethod
@@ -101,18 +111,58 @@ class LGBModel(AbstractModel):
             Scales linearly with the number of estimators, number of classes, and number of leaves.
             Memory usage peaks during model saving, with the peak consuming approximately 2-4x the size of the model in memory.
         """
+        data_mem_usage = get_approximate_df_mem_usage(X).sum()
+        return cls._estimate_memory_usage_common(
+            num_features=X.shape[1],
+            data_mem_usage=data_mem_usage,
+            hyperparameters=hyperparameters,
+            num_classes=num_classes,
+        )
+
+    @classmethod
+    def _estimate_memory_usage_static_lite(
+        cls,
+        num_samples: int,
+        num_features: int,
+        num_bytes_per_cell: float = 4,
+        hyperparameters: dict = None,
+        num_classes: int = 1,
+        **kwargs,
+    ) -> int:
+        data_mem_usage = num_samples * num_features * num_bytes_per_cell
+        return cls._estimate_memory_usage_common(
+            num_features=num_features,
+            data_mem_usage=data_mem_usage,
+            hyperparameters=hyperparameters,
+            num_classes=num_classes,
+        )
+
+    @classmethod
+    def _estimate_memory_usage_common(
+        cls,
+        num_features: int,
+        data_mem_usage: int | float,
+        hyperparameters: dict | None = None,
+        num_classes: int = 1,
+    ) -> int:
+        """
+        Utility method to avoid code duplication
+        """
         if hyperparameters is None:
             hyperparameters = {}
-        num_classes = num_classes if num_classes else 1  # num_classes could be None after initialization if it's a regression problem
-        data_mem_usage = get_approximate_df_mem_usage(X).sum()
-        data_mem_usage_bytes = data_mem_usage * 5 + data_mem_usage / 4 * num_classes  # TODO: Extremely crude approximation, can be vastly improved
+        num_classes = (
+            num_classes if num_classes else 1
+        )  # num_classes could be None after initialization if it's a regression problem
+        data_mem_usage_bytes = (
+            data_mem_usage * 5 + data_mem_usage / 4 * num_classes
+        )  # TODO: Extremely crude approximation, can be vastly improved
 
         n_trees_per_estimator = num_classes if num_classes > 2 else 1
 
         max_bins = hyperparameters.get("max_bins", 255)
         num_leaves = hyperparameters.get("num_leaves", 31)
         # Memory usage of histogram based on https://github.com/microsoft/LightGBM/issues/562#issuecomment-304524592
-        histogram_mem_usage_bytes = 20 * max_bins * len(X.columns) * num_leaves
+        histogram_mem_usage_bytes = 20 * max_bins * num_features * num_leaves
         histogram_mem_usage_bytes_max = hyperparameters.get("histogram_pool_size", None)
         if histogram_mem_usage_bytes_max is not None:
             histogram_mem_usage_bytes_max *= 1e6  # Convert megabytes to bytes, `histogram_pool_size` is in MB.
@@ -122,13 +172,34 @@ class LGBModel(AbstractModel):
 
         mem_size_per_estimator = n_trees_per_estimator * num_leaves * 100  # very rough estimate
         n_estimators = hyperparameters.get("num_boost_round", DEFAULT_NUM_BOOST_ROUND)
-        n_estimators_min = min(n_estimators, 1000)
-        mem_size_estimators = n_estimators_min * mem_size_per_estimator  # memory estimate after fitting up to 1000 estimators
+        n_estimators_min = min(n_estimators, 5000)
+        mem_size_estimators = (
+            n_estimators_min * mem_size_per_estimator
+        )  # memory estimate after fitting up to 5000 estimators
 
-        approx_mem_size_req = data_mem_usage_bytes + histogram_mem_usage_bytes + mem_size_estimators
-        return approx_mem_size_req
+        # Fixed overhead of a LightGBM fit (library init, threading buffers): measured
+        # ~25-40 MB regardless of data size; without it small fits are underestimated 3-10x.
+        fixed_overhead_bytes = 50e6
 
-    def _fit(self, X, y, X_val=None, y_val=None, time_limit=None, num_gpus=0, num_cpus=0, sample_weight=None, sample_weight_val=None, verbosity=2, **kwargs):
+        approx_mem_size_req = (
+            fixed_overhead_bytes + data_mem_usage_bytes + histogram_mem_usage_bytes + mem_size_estimators
+        )
+        return int(approx_mem_size_req)
+
+    def _fit(
+        self,
+        X,
+        y,
+        X_val=None,
+        y_val=None,
+        time_limit=None,
+        num_gpus=0,
+        num_cpus=0,
+        sample_weight=None,
+        sample_weight_val=None,
+        verbosity=2,
+        **kwargs,
+    ):
         try_import_lightgbm()  # raise helpful error message if LightGBM isn't installed
         start_time = time.time()
         ag_params = self._get_ag_params()
@@ -154,14 +225,19 @@ class LGBModel(AbstractModel):
         stopping_metric, stopping_metric_name = self._get_stopping_metric_internal()
 
         num_boost_round = params.pop("num_boost_round", DEFAULT_NUM_BOOST_ROUND)
-        dart_retrain = params.pop("dart_retrain", False)  # Whether to retrain the model to get optimal iteration if model is trained in 'dart' mode.
+        dart_retrain = params.pop(
+            "dart_retrain", False
+        )  # Whether to retrain the model to get optimal iteration if model is trained in 'dart' mode.
         if num_gpus != 0:
             if "device" not in params:
                 # TODO: lightgbm must have a special install to support GPU: https://github.com/Microsoft/LightGBM/tree/master/python-package#build-gpu-version
                 #  Before enabling GPU, we should add code to detect that GPU-enabled version is installed and that a valid GPU exists.
                 #  GPU training heavily alters accuracy, often in a negative manner. We will have to be careful about when to use GPU.
                 params["device"] = "gpu"
-                logger.log(20, f"\tTraining {self.name} with GPU, note that this may negatively impact model quality compared to CPU training.")
+                logger.log(
+                    20,
+                    "\tWarning: Training LightGBM with GPU. This may negatively impact model quality compared to CPU training.",
+                )
         logger.log(15, f"\tFitting {num_boost_round} rounds... Hyperparameters: {params}")
 
         if "num_threads" not in params:
@@ -175,7 +251,15 @@ class LGBModel(AbstractModel):
 
         num_rows_train = len(X)
         dataset_train, dataset_val, dataset_test = self.generate_datasets(
-            X=X, y=y, params=params, X_val=X_val, y_val=y_val, X_test=X_test, y_test=y_test, sample_weight=sample_weight, sample_weight_val=sample_weight_val
+            X=X,
+            y=y,
+            params=params,
+            X_val=X_val,
+            y_val=y_val,
+            X_test=X_test,
+            y_test=y_test,
+            sample_weight=sample_weight,
+            sample_weight_val=sample_weight_val,
         )
         gc.collect()
 
@@ -188,7 +272,9 @@ class LGBModel(AbstractModel):
             # TODO: Better solution: Track trend to early stop when score is far worse than best score, or score is trending worse over time
             early_stopping_rounds = ag_params.get("early_stop", "adaptive")
             if isinstance(early_stopping_rounds, (str, tuple, list)):
-                early_stopping_rounds = self._get_early_stopping_rounds(num_rows_train=num_rows_train, strategy=early_stopping_rounds)
+                early_stopping_rounds = self._get_early_stopping_rounds(
+                    num_rows_train=num_rows_train, strategy=early_stopping_rounds
+                )
             if early_stopping_rounds is None:
                 early_stopping_rounds = 999999
             reporter = kwargs.get("reporter", None)
@@ -197,7 +283,7 @@ class LGBModel(AbstractModel):
                 if "metric" not in params or params["metric"] == "":
                     params["metric"] = train_loss_name
                 elif train_loss_name not in params["metric"]:
-                    params["metric"] = f'{params["metric"]},{train_loss_name}'
+                    params["metric"] = f"{params['metric']},{train_loss_name}"
             # early stopping callback will be added later by QuantileBooster if problem_type==QUANTILE
             early_stopping_callback_kwargs = dict(
                 stopping_rounds=early_stopping_rounds,
@@ -225,7 +311,6 @@ class LGBModel(AbstractModel):
         if log_period is not None:
             callbacks.append(log_evaluation(period=log_period))
 
-        seed_val = params.pop("seed_value", 0)
         train_params = {
             "params": params,
             "train_set": dataset_train,
@@ -278,15 +363,13 @@ class LGBModel(AbstractModel):
             if "metric" not in train_params["params"] or train_params["params"]["metric"] == "":
                 train_params["params"]["metric"] = stopping_metric
             elif stopping_metric not in train_params["params"]["metric"]:
-                train_params["params"]["metric"] = f'{stopping_metric},{train_params["params"]["metric"]}'
+                train_params["params"]["metric"] = f"{stopping_metric},{train_params['params']['metric']}"
 
         if self.problem_type == SOFTCLASS:
             train_params["params"]["objective"] = lgb_utils.softclass_lgbobj
             train_params["params"]["num_classes"] = self.num_classes
         elif self.problem_type == QUANTILE:
             train_params["params"]["quantile_levels"] = self.quantile_levels
-        if seed_val is not None:
-            train_params["params"]["seed"] = seed_val
 
         # Train LightGBM model:
         # Note that self.model contains a <class 'lightgbm.basic.Booster'> not a LightBGMClassifier or LightGBMRegressor object
@@ -297,20 +380,36 @@ class LGBModel(AbstractModel):
             warnings.filterwarnings("ignore", message="Overriding the parameters from Reference Dataset.")
             warnings.filterwarnings("ignore", message="categorical_column in param dict is overridden.")
             try:
-                self.model = train_lgb_model(early_stopping_callback_kwargs=early_stopping_callback_kwargs, **train_params)
+                self.model = train_lgb_model(
+                    early_stopping_callback_kwargs=early_stopping_callback_kwargs, **train_params
+                )
             except LightGBMError:
-                if train_params["params"].get("device", "cpu") != "gpu":
+                if train_params["params"].get("device", "cpu") not in ["gpu", "cuda"]:
                     raise
                 else:
-                    logger.warning(
-                        "Warning: GPU mode might not be installed for LightGBM, GPU training raised an exception. Falling back to CPU training..."
-                        "Refer to LightGBM GPU documentation: https://github.com/Microsoft/LightGBM/tree/master/python-package#build-gpu-version"
-                        "One possible method is:"
-                        "\tpip uninstall lightgbm -y"
-                        "\tpip install lightgbm --install-option=--gpu"
-                    )
+                    if train_params["params"]["device"] == "gpu":
+                        logger.warning(
+                            "Warning: GPU mode might not be installed for LightGBM, "
+                            "GPU training raised an exception. Falling back to CPU training..."
+                            "Refer to LightGBM GPU documentation: "
+                            "https://github.com/Microsoft/LightGBM/tree/master/python-package#build-gpu-version"
+                            "One possible method is:"
+                            "\tpip uninstall lightgbm -y"
+                            "\tpip install lightgbm --install-option=--gpu"
+                        )
+                    elif train_params["params"]["device"] == "cuda":
+                        # Current blocker for using CUDA over GPU: https://github.com/microsoft/LightGBM/issues/6828
+                        # Note that device="cuda" works if AutoGluon (and therefore LightGBM) is installed via conda.
+                        logger.warning(
+                            "Warning: CUDA mode might not be installed for LightGBM, "
+                            "CUDA training raised an exception. Falling back to CPU training..."
+                            "Refer to LightGBM CUDA documentation: "
+                            "https://github.com/Microsoft/LightGBM/tree/master/python-package#build-cuda-version"
+                        )
                     train_params["params"]["device"] = "cpu"
-                    self.model = train_lgb_model(early_stopping_callback_kwargs=early_stopping_callback_kwargs, **train_params)
+                    self.model = train_lgb_model(
+                        early_stopping_callback_kwargs=early_stopping_callback_kwargs, **train_params
+                    )
             retrain = False
             if train_params["params"].get("boosting_type", "") == "dart":
                 if dataset_val is not None and dart_retrain and (self.model.best_iteration != num_boost_round):
@@ -320,14 +419,14 @@ class LGBModel(AbstractModel):
                         if time_left < 0.5 * time_limit:
                             retrain = False
                     if retrain:
-                        logger.log(15, f"Retraining LGB model to optimal iterations ('dart' mode).")
+                        logger.log(15, "Retraining LGB model to optimal iterations ('dart' mode).")
                         train_params.pop("callbacks", None)
                         train_params.pop("valid_sets", None)
                         train_params.pop("valid_names", None)
                         train_params["num_boost_round"] = self.model.best_iteration
                         self.model = train_lgb_model(**train_params)
                     else:
-                        logger.log(15, f"Not enough time to retrain LGB model ('dart' mode)...")
+                        logger.log(15, "Not enough time to retrain LGB model ('dart' mode)...")
 
         if generate_curves:
 
@@ -360,6 +459,9 @@ class LGBModel(AbstractModel):
         X = self.preprocess(X, **kwargs)
 
         y_pred_proba = self.model.predict(X, num_threads=num_cpus)
+        return self._post_process_predictions(y_pred_proba=y_pred_proba)
+
+    def _post_process_predictions(self, y_pred_proba) -> np.ndarray:
         if self.problem_type == QUANTILE:
             # y_pred_proba is a pd.DataFrame, need to convert
             y_pred_proba = y_pred_proba.to_numpy()
@@ -384,35 +486,105 @@ class LGBModel(AbstractModel):
             else:  # Should this ever happen?
                 return y_pred_proba[:, 1]
 
-    def _preprocess_nonadaptive(self, X, is_train=False, **kwargs):
+    @staticmethod
+    def _clean_column_name_for_lgb(column_name):
+        """Clean column names while keeping most semantic meaning."""
+        if not isinstance(column_name, str):
+            return column_name
+        for symbol in ['"', ",", ":", "{", "}", "[", "]", " "]:
+            column_name = column_name.replace(symbol, "_")
+        return column_name
+
+    @classmethod
+    def _rename_columns(cls, features: list) -> dict:
+        """
+        Generate a deterministic, one-to-one mapping from original feature names to
+        LightGBM-safe, unique column names.
+
+        This method:
+        - Cleans feature names using `_clean_column_name_for_lgb`
+        - Resolves naming collisions by appending numeric suffixes (`_2`, `_3`, ...)
+        - Guarantees that all output column names are unique
+        - Guarantees a strict 1-to-1 mapping between input features and output names
+
+        The mapping is deterministic with respect to input order. If two or more
+        features clean to the same base name, the first occurrence keeps the base
+        name and subsequent occurrences receive incrementing suffixes.
+
+        Parameters
+        ----------
+        features : list
+            List of feature names. All entries must be unique under Python equality
+            semantics (e.g., `"a"` and `"a"` or `1` and `True` are considered duplicates).
+
+        Returns
+        -------
+        dict
+            Mapping from original feature name to a unique, cleaned column name
+            suitable for use in LightGBM.
+
+        Raises
+        ------
+        ValueError
+            If `features` contains duplicate entries, since a dictionary cannot
+            represent a one-to-one mapping in that case.
+
+        """
+        if len(features) != len(set(features)):
+            raise ValueError("features contains duplicates; cannot create 1-to-1 mapping with a dict.")
+
+        unique_features = set()
+        features_map = {}
+        for feature in features:
+            cleaned_feature = cls._clean_column_name_for_lgb(feature)
+
+            unique_feature = cleaned_feature
+            if unique_feature in unique_features:
+                is_unique = False
+                count = 2
+                while not is_unique:
+                    unique_feature = f"{cleaned_feature}_{count}"
+                    if unique_feature not in unique_features:
+                        is_unique = True
+                    else:
+                        count += 1
+            unique_features.add(unique_feature)
+            features_map[feature] = unique_feature
+        return features_map
+
+    def _preprocess_nonadaptive(self, X: pd.DataFrame, is_train: bool = False, **kwargs):
         X = super()._preprocess_nonadaptive(X=X, **kwargs)
 
         if is_train:
             self._requires_remap = False
             for column in X.columns:
                 if isinstance(column, str):
-                    new_column = re.sub(r'[",:{}[\]]', "", column)
+                    new_column = re.sub(r'[",:{}[\]\s]', "", column)
                     if new_column != column:
-                        self._features_internal_map = {feature: i for i, feature in enumerate(list(X.columns))}
                         self._requires_remap = True
                         break
             if self._requires_remap:
-                self._features_internal_list = np.array([self._features_internal_map[feature] for feature in list(X.columns)])
-            else:
-                self._features_internal_list = self._features_internal
+                self._features_internal_map = self._rename_columns(features=list(X.columns))
+                self._features_internal_lgbm = [self._features_internal_map[feature] for feature in list(X.columns)]
 
-        if self._requires_remap:
-            X_new = X.copy(deep=False)
-            X_new.columns = self._features_internal_list
-            return X_new
-        else:
+        if not self._requires_remap:
             return X
+
+        X_new = X.copy(deep=False)
+        X_new.columns = self._features_internal_lgbm
+
+        # Update feature metadata
+        if is_train:
+            new_feature_metadata = self._feature_metadata.rename_features(self._features_internal_map)
+            self._preprocess_set_features_internal(X=X_new, feature_metadata=new_feature_metadata)
+
+        return X_new
 
     def generate_datasets(
         self,
         X: DataFrame,
         y: Series,
-        params,
+        params: dict,
         X_val=None,
         y_val=None,
         X_test=None,
@@ -421,11 +593,14 @@ class LGBModel(AbstractModel):
         sample_weight_val=None,
         sample_weight_test=None,
         save=False,
+        init_train=None,
+        init_val=None,
+        init_test=None,
     ):
         lgb_dataset_params_keys = ["two_round"]  # Keys that are specific to lightGBM Dataset object construction.
         data_params = {key: params[key] for key in lgb_dataset_params_keys if key in params}.copy()
 
-        X = self.preprocess(X, is_train=True)
+        X = self.preprocess(X, y=y, is_train=True)
         if X_val is not None:
             X_val = self.preprocess(X_val)
         if X_test is not None:
@@ -447,7 +622,13 @@ class LGBModel(AbstractModel):
 
         # X, W_train = self.convert_to_weight(X=X)
         dataset_train = construct_dataset(
-            x=X, y=y, location=os.path.join("self.path", "datasets", "train"), params=data_params, save=save, weight=sample_weight
+            x=X,
+            y=y,
+            location=os.path.join("self.path", "datasets", "train"),
+            params=data_params,
+            save=save,
+            weight=sample_weight,
+            init_score=init_train,
         )
         # dataset_train = construct_dataset_lowest_memory(X=X, y=y, location=self.path + 'datasets/train', params=data_params)
         if X_val is not None:
@@ -460,6 +641,7 @@ class LGBModel(AbstractModel):
                 params=data_params,
                 save=save,
                 weight=sample_weight_val,
+                init_score=init_val,
             )
             # dataset_val = construct_dataset_lowest_memory(X=X_val, y=y_val, location=self.path + 'datasets/val', reference=dataset_train, params=data_params)
         else:
@@ -474,6 +656,7 @@ class LGBModel(AbstractModel):
                 params=data_params,
                 save=save,
                 weight=sample_weight_test,
+                init_score=init_test,
             )
         else:
             dataset_test = None
@@ -501,50 +684,47 @@ class LGBModel(AbstractModel):
     def _get_early_stopping_rounds(self, num_rows_train, strategy="auto"):
         return get_early_stopping_rounds(num_rows_train=num_rows_train, strategy=strategy)
 
-    def _get_default_auxiliary_params(self) -> dict:
-        default_auxiliary_params = super()._get_default_auxiliary_params()
-        extra_auxiliary_params = dict(
-            valid_raw_types=[R_BOOL, R_INT, R_FLOAT, R_CATEGORY],
-        )
-        default_auxiliary_params.update(extra_auxiliary_params)
-        return default_auxiliary_params
-
-    def _is_gpu_lgbm_installed(self):
+    @staticmethod
+    def _is_gpu_lgbm_installed():
         # Taken from https://github.com/microsoft/LightGBM/issues/3939
         try_import_lightgbm()
         import lightgbm
 
+        rng = np.random.RandomState(42)
+        data = rng.rand(25, 2)
+        label = rng.randint(2, size=25)
+
         try:
-            data = np.random.rand(50, 2)
-            label = np.random.randint(2, size=50)
             train_data = lightgbm.Dataset(data, label=label)
-            params = {"device": "gpu"}
-            gbm = lightgbm.train(params, train_set=train_data, verbose=-1)
+            params = {
+                "device": "gpu",
+                "verbose": -1,
+            }
+            gbm = lightgbm.train(params, num_boost_round=10, train_set=train_data)
             return True
-        except Exception as e:
+        except Exception:
             return False
 
-    def get_minimum_resources(self, is_gpu_available=False):
-        minimum_resources = {
-            "num_cpus": 1,
-        }
-        if is_gpu_available and self._is_gpu_lgbm_installed():
-            minimum_resources["num_gpus"] = 0.5
-        return minimum_resources
+    @staticmethod
+    def _is_cuda_lgbm_installed():
+        # Taken from https://github.com/microsoft/LightGBM/issues/3939
+        try_import_lightgbm()
+        import lightgbm
 
-    def _get_default_resources(self):
-        # only_physical_cores=True is faster in training
-        num_cpus = ResourceManager.get_cpu_count(only_physical_cores=True)
-        num_gpus = 0
-        return num_cpus, num_gpus
+        rng = np.random.RandomState(42)
+        data = rng.rand(25, 2)
+        label = rng.randint(2, size=25)
 
-    @classmethod
-    def supported_problem_types(cls) -> list[str] | None:
-        return ["binary", "multiclass", "regression", "quantile", "softclass"]
-
-    @property
-    def _features(self):
-        return self._features_internal_list
+        try:
+            train_data = lightgbm.Dataset(data, label=label)
+            params = {
+                "device": "cuda",
+                "verbose": -1,
+            }
+            gbm = lightgbm.train(params, num_boost_round=10, train_set=train_data)
+            return True
+        except Exception:
+            return False
 
     def _ag_params(self) -> set:
         return {"early_stop", "generate_curves", "curve_metrics", "use_error_for_curve_metrics"}
@@ -552,7 +732,7 @@ class LGBModel(AbstractModel):
     @classmethod
     def _class_tags(cls):
         return {
-            "can_estimate_memory_usage_static": True,
+            "can_estimate_memory_usage_static_lite": True,
             "supports_learning_curves": True,
         }
 

@@ -1,6 +1,6 @@
 import inspect
 from functools import wraps
-from typing import Any, Callable, Dict, Optional, Type
+from typing import Any, Callable, Type
 
 from autogluon.timeseries.models import (
     ADIDAModel,
@@ -90,10 +90,29 @@ GLUONTS_MODELS = [
 MLFORECAST_MODELS = [DirectTabularModel, RecursiveTabularModel]
 PER_STEP_TABULAR_MODELS = [PerStepTabularModel]
 
+CHRONOS2_MODEL_PATH = "autogluon/chronos-2-small"
 CHRONOS_BOLT_MODEL_PATH = "autogluon/chronos-bolt-tiny"
 CHRONOS_CLASSIC_MODEL_PATH = "autogluon/chronos-t5-tiny"
+TOTO2_MODEL_PATH = "Datadog/Toto-2.0-4m"
 
-DEFAULT_HYPERPARAMETERS: Dict[Type[AbstractTimeSeriesModel], Dict] = {
+# device_arg, cuda_available, expected_device
+DEVICE_TEST_CASES = [
+    # if device is not provided, CUDA is used when available and CPU otherwise
+    (None, True, "cuda"),
+    (None, False, "cpu"),
+    # an explicitly provided device is always respected, which enables non-CUDA backends
+    ("mps", True, "mps"),
+    ("mps", False, "mps"),
+    ("xpu", True, "xpu"),
+    ("xpu", False, "xpu"),
+    ("cpu", True, "cpu"),
+    ("cpu", False, "cpu"),
+    ("cuda", True, "cuda"),
+    ("cuda", False, "cuda"),
+    ("cuda:1", True, "cuda:1"),
+]
+
+DEFAULT_HYPERPARAMETERS: dict[Type[AbstractTimeSeriesModel], dict] = {
     # Supertypes should come first, so that the most specific hyperparameters are used
     # in case of an overlap
     AbstractLocalModel: {"n_jobs": 1, "use_fallback_model": False},
@@ -115,7 +134,7 @@ DEFAULT_HYPERPARAMETERS: Dict[Type[AbstractTimeSeriesModel], Dict] = {
 }
 
 
-def get_default_hyperparameters(model_type: Callable[..., AbstractTimeSeriesModel]) -> Dict[str, Any]:
+def get_default_hyperparameters(model_type: Callable[..., AbstractTimeSeriesModel]) -> dict[str, Any]:
     if not inspect.isclass(model_type):
         return {}
 
@@ -137,7 +156,7 @@ def get_multi_window_deepar(hyperparameters=None, **kwargs):
 
 
 def patch_constructor(
-    model_class: Callable[..., AbstractTimeSeriesModel], extra_hyperparameters: Optional[Dict[str, Any]] = None
+    model_class: Callable[..., AbstractTimeSeriesModel], extra_hyperparameters: dict[str, Any] | None = None
 ) -> Callable[..., AbstractTimeSeriesModel]:
     """Return a model constructor function that provides additional hyperparameters
     from this module in addition to the ones defined in the respective tests."""

@@ -12,19 +12,27 @@ def pytest_addoption(parser):
     parser.addoption("--runslow", action="store_true", default=False, help="run slow tests")
     parser.addoption("--runregression", action="store_true", default=False, help="run regression tests")
     parser.addoption("--runpyodide", action="store_true", default=False, help="run Pyodide tests")
+    parser.addoption("--run-multi-gpu", action="store_true", default=False, help="run multi-GPU tests")
 
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: mark test as slow to run")
     config.addinivalue_line("markers", "regression: mark test as regression test")
     config.addinivalue_line("markers", "pyodide: mark test as pyodide test")
+    config.addinivalue_line("markers", "multi_gpu: mark test to run on multi-GPU CI only")
 
 
 def pytest_collection_modifyitems(config, items):
     skip_slow = pytest.mark.skip(reason="need --runslow option to run")
     skip_regression = pytest.mark.skip(reason="need --runregression option to run")
     skip_pyodide = pytest.mark.skip(reason="need --runpyodide option to run")
-    custom_markers = dict(slow=skip_slow, regression=skip_regression, pyodide=skip_pyodide)
+    skip_multi_gpu = pytest.mark.skip(reason="need --run-multi-gpu option to run")
+    custom_markers = dict(
+        slow=skip_slow,
+        regression=skip_regression,
+        pyodide=skip_pyodide,
+        multi_gpu=skip_multi_gpu,
+    )
     if config.getoption("--runslow"):
         # --runslow given in cli: do not skip slow tests
         custom_markers.pop("slow", None)
@@ -34,6 +42,9 @@ def pytest_collection_modifyitems(config, items):
     if config.getoption("--runpyodide"):
         # --runpyodide given in cli: do not skip pyodide tests
         custom_markers.pop("pyodide", None)
+    if config.getoption("--run-multi-gpu"):
+        # --run-multi-gpu given in cli: do not skip multi-GPU tests
+        custom_markers.pop("multi_gpu", None)
 
     for item in items:
         for marker in custom_markers:
@@ -85,3 +96,22 @@ def mock_num_gpus():
 @pytest.fixture
 def k_fold():
     return 2
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _ag_default_base_path(tmp_path_factory):
+    """Redirect auto-generated predictor paths into pytest's temporary directory.
+
+    Without this, every `TabularPredictor(...)` created without an explicit `path` leaves an
+    `AutogluonModels/ag-<timestamp>` directory behind in the working directory, and `FitHelper`
+    writes its predictors under `./datasets/`. pytest reclaims its own tmp dirs (keeping only the
+    last few sessions), so nothing accumulates in the repo.
+    """
+    base_path = tmp_path_factory.mktemp("ag_models")
+    prev = os.environ.get("AG_DEFAULT_BASE_PATH")
+    os.environ["AG_DEFAULT_BASE_PATH"] = str(base_path)
+    yield str(base_path)
+    if prev is None:
+        os.environ.pop("AG_DEFAULT_BASE_PATH", None)
+    else:
+        os.environ["AG_DEFAULT_BASE_PATH"] = prev

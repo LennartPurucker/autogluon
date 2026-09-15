@@ -134,7 +134,7 @@ class MultiImageMixDataset(torch.utils.data.Dataset):
                 per_ret = apply_data_processor(
                     per_sample_features=per_sample_features,
                     data_processors=per_processors_group,
-                    feature_modalities=getattr(self, f"modality_types_{group_id}"),
+                    data_types=getattr(self, f"modality_types_{group_id}"),
                     is_training=self.is_training,
                     load_only=True,
                 )
@@ -290,7 +290,7 @@ class Mosaic(BaseTransform):
         prob: float = 1.0,
     ) -> None:
         assert isinstance(img_scale, tuple)
-        assert 0 <= prob <= 1.0, "The probability should be in range [0,1]. " f"got {prob}."
+        assert 0 <= prob <= 1.0, f"The probability should be in range [0,1]. got {prob}."
 
         log_img_scale(img_scale, skip_square=True, shape_order="wh")
         self.img_scale = img_scale

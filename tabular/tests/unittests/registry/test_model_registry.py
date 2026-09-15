@@ -11,12 +11,10 @@ from autogluon.core.models import (
     GreedyWeightedEnsembleModel,
     SimpleWeightedEnsembleModel,
 )
-from autogluon.tabular.registry import ag_model_registry, ModelRegistry
-
 from autogluon.tabular.models import (
     BoostedRulesModel,
     CatBoostModel,
-    FastTextModel,
+    EBMModel,
     FigsModel,
     FTTransformerModel,
     GreedyTreeModel,
@@ -25,28 +23,36 @@ from autogluon.tabular.models import (
     KNNModel,
     LGBModel,
     LinearModel,
+    MitraModel,
     MultiModalPredictorModel,
     NNFastAiTabularModel,
+    NoriModel,
+    PrepLGBModel,
     RealMLPModel,
+    RealTabPFNv2Model,
+    RealTabPFNv25Model,
     RFModel,
     RuleFitModel,
+    TabDPTModel,
+    TabDPTTurboModel,
     TabICLModel,
     TabMModel,
+    TabPFN3Model,
     TabPFNMixModel,
-    MitraModel,
-    TabPFNV2Model,
+    TabPFNv26Model,
     TabularNeuralNetTorchModel,
     TextPredictorModel,
     XGBoostModel,
     XTModel,
 )
-
+from autogluon.tabular.registry import ModelRegistry, ag_model_registry
 
 EXPECTED_MODEL_KEYS = {
     RFModel: "RF",
     XTModel: "XT",
     KNNModel: "KNN",
     LGBModel: "GBM",
+    PrepLGBModel: "GBM_PREP",
     CatBoostModel: "CAT",
     XGBoostModel: "XGB",
     RealMLPModel: "REALMLP",
@@ -57,12 +63,15 @@ EXPECTED_MODEL_KEYS = {
     ImagePredictorModel: "AG_IMAGE_NN",
     MultiModalPredictorModel: "AG_AUTOMM",
     FTTransformerModel: "FT_TRANSFORMER",
+    TabDPTModel: "TABDPT",
+    TabDPTTurboModel: "TABDPT-TURBO",
     TabICLModel: "TABICL",
     TabMModel: "TABM",
-    TabPFNV2Model: "TABPFNV2",
     TabPFNMixModel: "TABPFNMIX",
+    TabPFNv26Model: "TABPFN-2.6",
+    TabPFN3Model: "TABPFN-3",
     MitraModel: "MITRA",
-    FastTextModel: "FASTTEXT",
+    NoriModel: "NORI",
     GreedyWeightedEnsembleModel: "ENS_WEIGHTED",
     SimpleWeightedEnsembleModel: "SIMPLE_ENS_WEIGHTED",
     RuleFitModel: "IM_RULEFIT",
@@ -71,6 +80,9 @@ EXPECTED_MODEL_KEYS = {
     HSTreeModel: "IM_HSTREE",
     BoostedRulesModel: "IM_BOOSTEDRULES",
     DummyModel: "DUMMY",
+    EBMModel: "EBM",
+    RealTabPFNv25Model: "REALTABPFN-V2.5",
+    RealTabPFNv2Model: "REALTABPFN-V2",
 }
 
 EXPECTED_MODEL_NAMES = {
@@ -78,6 +90,7 @@ EXPECTED_MODEL_NAMES = {
     XTModel: "ExtraTrees",
     KNNModel: "KNeighbors",
     LGBModel: "LightGBM",
+    PrepLGBModel: "LightGBMPrep",
     CatBoostModel: "CatBoost",
     XGBoostModel: "XGBoost",
     RealMLPModel: "RealMLP",
@@ -88,12 +101,15 @@ EXPECTED_MODEL_NAMES = {
     ImagePredictorModel: "ImagePredictor",
     MultiModalPredictorModel: "MultiModalPredictor",
     FTTransformerModel: "FTTransformer",
+    TabDPTModel: "TabDPT",
+    TabDPTTurboModel: "TabDPT-Turbo",
     TabICLModel: "TabICL",
     TabMModel: "TabM",
-    TabPFNV2Model: "TabPFNv2",
     TabPFNMixModel: "TabPFNMix",
+    TabPFNv26Model: "TabPFN-2.6",
+    TabPFN3Model: "TabPFN-3",
     MitraModel: "Mitra",
-    FastTextModel: "FastText",
+    NoriModel: "Nori",
     GreedyWeightedEnsembleModel: "WeightedEnsemble",
     SimpleWeightedEnsembleModel: "WeightedEnsemble",
     RuleFitModel: "RuleFit",
@@ -102,6 +118,9 @@ EXPECTED_MODEL_NAMES = {
     HSTreeModel: "HierarchicalShrinkageTree",
     BoostedRulesModel: "BoostedRules",
     DummyModel: "Dummy",
+    EBMModel: "EBM",
+    RealTabPFNv25Model: "RealTabPFN-v2.5",
+    RealTabPFNv2Model: "RealTabPFN-v2",
 }
 
 # Higher values indicate higher priority, priority dictates the order models are trained for a given level.
@@ -110,22 +129,27 @@ EXPECTED_MODEL_PRIORITY = {
     XTModel: 60,
     KNNModel: 100,
     LGBModel: 90,
+    PrepLGBModel: 90,
     CatBoostModel: 70,
     XGBoostModel: 40,
     RealMLPModel: 75,
     TabularNeuralNetTorchModel: 25,
     LinearModel: 30,
+    EBMModel: 35,
     NNFastAiTabularModel: 50,
     TextPredictorModel: 0,
     ImagePredictorModel: 0,
     MultiModalPredictorModel: 0,
     FTTransformerModel: 0,
+    TabDPTModel: 50,
+    TabDPTTurboModel: 50,
     TabICLModel: 65,
     TabMModel: 85,
-    TabPFNV2Model: 105,
     TabPFNMixModel: 45,
+    TabPFNv26Model: 40,
+    TabPFN3Model: 40,
     MitraModel: 55,
-    FastTextModel: 0,
+    NoriModel: 40,
     GreedyWeightedEnsembleModel: 0,
     SimpleWeightedEnsembleModel: 0,
     RuleFitModel: 0,
@@ -134,10 +158,15 @@ EXPECTED_MODEL_PRIORITY = {
     HSTreeModel: 0,
     BoostedRulesModel: 0,
     DummyModel: 0,
+    RealTabPFNv25Model: 40,
+    RealTabPFNv2Model: 40,
 }
 
 EXPECTED_MODEL_PRIORITY_BY_PROBLEM_TYPE = {
     LGBModel: {
+        "softclass": 100,
+    },
+    PrepLGBModel: {
         "softclass": 100,
     },
     CatBoostModel: {
@@ -260,7 +289,9 @@ def test_model_cls_priority_by_problem_type(model_cls: Type[AbstractModel]):
     assert expected_model_priority_by_problem_type == model_cls.ag_priority_by_problem_type
     assert isinstance(model_cls.ag_priority_by_problem_type, MappingProxyType)
     for problem_type in ["binary", "multiclass", "regression", "quantile", "softclass"]:
-        expected_model_priority = expected_model_priority_by_problem_type.get(problem_type, expected_model_priority_default)
+        expected_model_priority = expected_model_priority_by_problem_type.get(
+            problem_type, expected_model_priority_default
+        )
         model_priority = model_cls.get_ag_priority(problem_type=problem_type)
         assert expected_model_priority == model_priority
     assert expected_model_priority_default == model_cls.get_ag_priority()

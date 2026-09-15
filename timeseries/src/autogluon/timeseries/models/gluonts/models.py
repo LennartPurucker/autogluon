@@ -3,7 +3,7 @@ Module including wrappers for PyTorch implementations of models in GluonTS
 """
 
 import logging
-from typing import Any, Dict, Type
+from typing import Any, Type
 
 from gluonts.model.estimator import Estimator as GluonTSEstimator
 
@@ -41,10 +41,8 @@ class DeepARModel(AbstractGluonTSModel):
         Number of steps to unroll the RNN for before computing predictions
     disable_static_features : bool, default = False
         If True, static features won't be used by the model even if they are present in the dataset.
-        If False, static features will be used by the model if they are present in the dataset.
     disable_known_covariates : bool, default = False
         If True, known covariates won't be used by the model even if they are present in the dataset.
-        If False, known covariates will be used by the model if they are present in the dataset.
     num_layers : int, default = 2
         Number of RNN layers
     hidden_size : int, default = 40
@@ -81,6 +79,8 @@ class DeepARModel(AbstractGluonTSModel):
 
     # TODO: Replace "scaling: bool" with "window_scaler": {"mean_abs", None} for consistency?
 
+    ag_priority = 40
+
     _supports_known_covariates = True
     _supports_static_features = True
 
@@ -89,7 +89,7 @@ class DeepARModel(AbstractGluonTSModel):
 
         return DeepAREstimator
 
-    def _get_estimator_init_args(self) -> Dict[str, Any]:
+    def _get_estimator_init_args(self) -> dict[str, Any]:
         init_kwargs = super()._get_estimator_init_args()
         init_kwargs["num_feat_static_cat"] = self.num_feat_static_cat
         init_kwargs["num_feat_static_real"] = self.num_feat_static_real
@@ -111,7 +111,7 @@ class SimpleFeedForwardModel(AbstractGluonTSModel):
     ----------------
     context_length : int, default = max(10, 2 * prediction_length)
         Number of time units that condition the predictions
-    hidden_dimensions: List[int], default = [20, 20]
+    hidden_dimensions: list[int], default = [20, 20]
         Size of hidden layers in the feedforward network
     distr_output : gluonts.torch.distributions.Output, default = StudentTOutput()
         Distribution output object that defines how the model output is converted to a forecast, and how the loss is computed.
@@ -137,6 +137,8 @@ class SimpleFeedForwardModel(AbstractGluonTSModel):
     keep_lightning_logs : bool, default = False
         If True, ``lightning_logs`` directory will NOT be removed after the model finished training.
     """
+
+    ag_priority = 10
 
     def _get_estimator_class(self) -> Type[GluonTSEstimator]:
         from gluonts.torch.model.simple_feedforward import SimpleFeedForwardEstimator
@@ -166,13 +168,10 @@ class TemporalFusionTransformerModel(AbstractGluonTSModel):
         Distribution output object that defines how the model output is converted to a forecast, and how the loss is computed.
     disable_static_features : bool, default = False
         If True, static features won't be used by the model even if they are present in the dataset.
-        If False, static features will be used by the model if they are present in the dataset.
     disable_known_covariates : bool, default = False
         If True, known covariates won't be used by the model even if they are present in the dataset.
-        If False, known covariates will be used by the model if they are present in the dataset.
     disable_past_covariates : bool, default = False
         If True, past covariates won't be used by the model even if they are present in the dataset.
-        If False, past covariates will be used by the model if they are present in the dataset.
     hidden_dim : int, default = 32
         Size of the LSTM & transformer hidden states.
     variable_dim : int, default = 32
@@ -199,6 +198,9 @@ class TemporalFusionTransformerModel(AbstractGluonTSModel):
         If True, ``lightning_logs`` directory will NOT be removed after the model finished training.
     """
 
+    ag_priority = 45
+    ag_model_aliases = ["TFT"]
+
     _supports_known_covariates = True
     _supports_past_covariates = True
     _supports_cat_covariates = True
@@ -214,7 +216,7 @@ class TemporalFusionTransformerModel(AbstractGluonTSModel):
             "context_length": min(512, max(64, 2 * self.prediction_length)),
         }
 
-    def _get_estimator_init_args(self) -> Dict[str, Any]:
+    def _get_estimator_init_args(self) -> dict[str, Any]:
         init_kwargs = super()._get_estimator_init_args()
         if self.num_feat_dynamic_real > 0:
             init_kwargs["dynamic_dims"] = [self.num_feat_dynamic_real]
@@ -282,6 +284,8 @@ class DLinearModel(AbstractGluonTSModel):
         If True, ``lightning_logs`` directory will NOT be removed after the model finished training.
     """
 
+    ag_priority = 10
+
     def _get_default_hyperparameters(self):
         return super()._get_default_hyperparameters() | {
             "context_length": 96,
@@ -340,6 +344,8 @@ class PatchTSTModel(AbstractGluonTSModel):
         If True, ``lightning_logs`` directory will NOT be removed after the model finished training.
     """
 
+    ag_priority = 30
+
     _supports_known_covariates = True
 
     def _get_estimator_class(self) -> Type[GluonTSEstimator]:
@@ -350,7 +356,7 @@ class PatchTSTModel(AbstractGluonTSModel):
     def _get_default_hyperparameters(self):
         return super()._get_default_hyperparameters() | {"context_length": 96, "patch_len": 16}
 
-    def _get_estimator_init_args(self) -> Dict[str, Any]:
+    def _get_estimator_init_args(self) -> dict[str, Any]:
         init_kwargs = super()._get_estimator_init_args()
         init_kwargs["num_feat_dynamic_real"] = self.num_feat_dynamic_real
         return init_kwargs
@@ -416,6 +422,8 @@ class WaveNetModel(AbstractGluonTSModel):
         If True, ``lightning_logs`` directory will NOT be removed after the model finished training.
     """
 
+    ag_priority = 25
+
     _supports_known_covariates = True
     _supports_static_features = True
     default_num_samples: int = 100
@@ -425,7 +433,7 @@ class WaveNetModel(AbstractGluonTSModel):
 
         return WaveNetEstimator
 
-    def _get_estimator_init_args(self) -> Dict[str, Any]:
+    def _get_estimator_init_args(self) -> dict[str, Any]:
         init_kwargs = super()._get_estimator_init_args()
         init_kwargs["num_feat_static_cat"] = self.num_feat_static_cat
         init_kwargs["num_feat_static_real"] = self.num_feat_static_real
@@ -457,10 +465,8 @@ class TiDEModel(AbstractGluonTSModel):
         Number of past values used for prediction.
     disable_static_features : bool, default = False
         If True, static features won't be used by the model even if they are present in the dataset.
-        If False, static features will be used by the model if they are present in the dataset.
     disable_known_covariates : bool, default = False
         If True, known covariates won't be used by the model even if they are present in the dataset.
-        If False, known covariates will be used by the model if they are present in the dataset.
     feat_proj_hidden_dim : int, default = 4
         Size of the feature projection layer.
     encoder_hidden_dim : int, default = 64
@@ -508,6 +514,8 @@ class TiDEModel(AbstractGluonTSModel):
         If True, ``lightning_logs`` directory will NOT be removed after the model finished training.
     """
 
+    ag_priority = 30
+
     _supports_known_covariates = True
     _supports_static_features = True
 
@@ -532,7 +540,7 @@ class TiDEModel(AbstractGluonTSModel):
             "batch_size": 256,
         }
 
-    def _get_estimator_init_args(self) -> Dict[str, Any]:
+    def _get_estimator_init_args(self) -> dict[str, Any]:
         init_kwargs = super()._get_estimator_init_args()
         init_kwargs["num_feat_static_cat"] = self.num_feat_static_cat
         init_kwargs["num_feat_static_real"] = self.num_feat_static_real

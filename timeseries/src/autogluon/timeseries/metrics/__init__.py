@@ -1,34 +1,40 @@
 from __future__ import annotations
 
 from pprint import pformat
-from typing import Any, Dict, Optional, Sequence, Type, Union
+from typing import Any, Sequence, Type
 
 import numpy as np
 
 from .abstract import TimeSeriesScorer
-from .point import MAE, MAPE, MASE, MSE, RMSE, RMSLE, RMSSE, SMAPE, WAPE, WCD
-from .quantile import SQL, WQL
+from .point import BIAS, MAE, MAEB, MAPE, MASE, MSE, RMSE, RMSLE, RMSSE, SMAPE, WAPE, WAPEB, WCD
+from .quantile import MQL, SQL, WQL
 
 __all__ = [
     "TimeSeriesScorer",
     "check_get_evaluation_metric",
+    "BIAS",
     "MAE",
+    "MAEB",
     "MAPE",
     "MASE",
     "SMAPE",
     "MSE",
+    "MQL",
     "RMSE",
     "RMSLE",
     "RMSSE",
     "SQL",
     "WAPE",
+    "WAPEB",
     "WCD",
     "WQL",
+    "AVAILABLE_METRICS",
+    "METRIC_ALIASES",
 ]
 
 DEFAULT_METRIC_NAME = "WQL"
 
-AVAILABLE_METRICS: Dict[str, Type[TimeSeriesScorer]] = {
+AVAILABLE_METRICS: dict[str, Type[TimeSeriesScorer]] = {
     "MASE": MASE,
     "MAPE": MAPE,
     "SMAPE": SMAPE,
@@ -36,10 +42,32 @@ AVAILABLE_METRICS: Dict[str, Type[TimeSeriesScorer]] = {
     "RMSLE": RMSLE,
     "RMSSE": RMSSE,
     "WAPE": WAPE,
+    "WAPEB": WAPEB,
     "SQL": SQL,
     "WQL": WQL,
+    "MQL": MQL,
     "MSE": MSE,
     "MAE": MAE,
+    "MAEB": MAEB,
+    "BIAS": BIAS,
+}
+
+# Provide lowercase aliases for metrics for consistency with autogluon.tabular
+METRIC_ALIASES: dict[str, str] = {
+    "mean_absolute_error": "MAE",
+    "mean_squared_error": "MSE",
+    "root_mean_squared_error": "RMSE",
+    "root_mean_squared_logarithmic_error": "RMSLE",
+    "mean_absolute_percentage_error": "MAPE",
+    "symmetric_mean_absolute_percentage_error": "SMAPE",
+    "mean_absolute_scaled_error": "MASE",
+    "root_mean_squared_scaled_error": "RMSSE",
+    "weighted_absolute_percentage_error": "WAPE",
+    "weighted_quantile_loss": "WQL",
+    "scaled_quantile_loss": "SQL",
+    "mean_quantile_loss": "MQL",
+    "mean_absolute_error_with_bias": "MAEB",
+    "weighted_absolute_percentage_error_with_bias": "WAPEB",
 }
 
 # For backward compatibility
@@ -48,22 +76,22 @@ DEPRECATED_METRICS = {
 }
 
 # Experimental metrics that are not yet user facing
-EXPERIMENTAL_METRICS: Dict[str, Type[TimeSeriesScorer]] = {
+EXPERIMENTAL_METRICS: dict[str, Type[TimeSeriesScorer]] = {
     "WCD": WCD,
 }
 
 
 def check_get_evaluation_metric(
-    eval_metric: Union[str, TimeSeriesScorer, Type[TimeSeriesScorer], None],
+    eval_metric: str | TimeSeriesScorer | Type[TimeSeriesScorer] | None,
     prediction_length: int,
-    seasonal_period: Optional[int] = None,
-    horizon_weight: Optional[Sequence[float] | np.ndarray] = None,
+    seasonal_period: int | None = None,
+    horizon_weight: Sequence[float] | np.ndarray | None = None,
 ) -> TimeSeriesScorer:
     """Factory method for TimeSeriesScorer objects.
 
     Returns
     -------
-    scorer :
+    scorer
         A `TimeSeriesScorer` object based on the provided `eval_metric`.
 
         `scorer.prediction_length` is always set to the `prediction_length` provided to this method.
@@ -75,7 +103,7 @@ def check_get_evaluation_metric(
         value of `horizon_weight` is kept.
     """
     scorer: TimeSeriesScorer
-    metric_kwargs: Dict[str, Any] = dict(
+    metric_kwargs: dict[str, Any] = dict(
         prediction_length=prediction_length, seasonal_period=seasonal_period, horizon_weight=horizon_weight
     )
     if isinstance(eval_metric, TimeSeriesScorer):
@@ -91,7 +119,7 @@ def check_get_evaluation_metric(
         # e.g., user passed `eval_metric=CustomMetric` instead of `eval_metric=CustomMetric()`
         scorer = eval_metric(**metric_kwargs)
     elif isinstance(eval_metric, str):
-        metric_name = DEPRECATED_METRICS.get(eval_metric, eval_metric).upper()
+        metric_name = METRIC_ALIASES.get(eval_metric, DEPRECATED_METRICS.get(eval_metric, eval_metric)).upper()
         if metric_name in AVAILABLE_METRICS:
             scorer = AVAILABLE_METRICS[metric_name](**metric_kwargs)
         elif metric_name in EXPERIMENTAL_METRICS:

@@ -12,6 +12,7 @@ from typing import Type
 import numpy as np
 import pandas as pd
 
+from autogluon.common.utils.cv_splitter import CVSplitter
 from autogluon.common.utils.distribute_utils import DistributedContext
 from autogluon.common.utils.log_utils import DuplicateFilter
 from autogluon.common.utils.try_import import try_import_ray
@@ -23,7 +24,7 @@ from ...pseudolabeling.pseudolabeling import assert_pseudo_column_match
 from ...utils.exceptions import TimeLimitExceeded
 from ...utils.loaders import load_pkl
 from ...utils.savers import save_pkl
-from ...utils.utils import CVSplitter, _compute_fi_with_stddev
+from ...utils.utils import _compute_fi_with_stddev
 from ..abstract.abstract_model import AbstractModel
 from ..abstract.model_trial import model_trial, skip_hpo
 from .fold_fitting_strategy import (
@@ -60,15 +61,27 @@ class BaggedEnsembleModel(AbstractModel):
     """
 
     _oof_filename = "oof.pkl"
+    seed_name = "model_random_seed"
 
-    def __init__(self, model_base: AbstractModel | Type[AbstractModel], model_base_kwargs: dict[str, any] = None, random_state: int = 0, **kwargs):
+    _default_auxiliary_params_extra = dict(
+        drop_unique=False,  # TODO: Get the value from child instead
+    )
+
+    def __init__(
+        self,
+        model_base: AbstractModel | Type[AbstractModel],
+        model_base_kwargs: dict[str, any] = None,
+        random_state: int = 0,
+        **kwargs,
+    ):
         if inspect.isclass(model_base):
             if model_base_kwargs is None:
                 model_base_kwargs = dict()
             self.model_base: AbstractModel = model_base(**model_base_kwargs)
         elif model_base_kwargs is not None:
             raise AssertionError(
-                f"model_base_kwargs must be None if model_base was passed as an object! " f"(model_base: {model_base}, model_base_kwargs: {model_base_kwargs})"
+                f"model_base_kwargs must be None if model_base was passed as an object! "
+                f"(model_base: {model_base}, model_base_kwargs: {model_base_kwargs})"
             )
         else:
             self.model_base: AbstractModel = model_base
@@ -76,20 +89,39 @@ class BaggedEnsembleModel(AbstractModel):
         self.models = []
         self._oof_pred_proba = None
         self._oof_pred_model_repeats = None
-        self._n_repeats = 0  # Number of n_repeats with at least 1 model fit, if kfold=5 and 8 models have been fit, _n_repeats is 2
-        self._n_repeats_finished = 0  # Number of n_repeats finished, if kfold=5 and 8 models have been fit, _n_repeats_finished is 1
+        self._n_repeats = (
+            0  # Number of n_repeats with at least 1 model fit, if kfold=5 and 8 models have been fit, _n_repeats is 2
+        )
+        self._n_repeats_finished = (
+            0  # Number of n_repeats finished, if kfold=5 and 8 models have been fit, _n_repeats_finished is 1
+        )
         self._k_fold_end = 0  # Number of models fit in current n_repeat (0 if completed), if kfold=5 and 8 models have been fit, _k_fold_end is 3
         self._k = None  # k models per n_repeat, equivalent to kfold value
         self._k_per_n_repeat = []  # k-fold used for each n_repeat. == [5, 10, 3] if first kfold was 5, second was 10, and third was 3
         self._random_state = random_state
         self.low_memory = True
         self._bagged_mode = None
-        # _child_oof currently is only set to True for KNN models, that are capable of LOO prediction generation to avoid needing bagging.
-        # TODO: Consider moving `_child_oof` logic to a separate class / refactor OOF logic.
         # FIXME: Avoid unnecessary refit during refit_full on `_child_oof=True` models, just reuse the original model.
-        self._child_oof = False  # Whether the OOF preds were taken from a single child model (Assumes child can produce OOF preds without bagging).
+        # Where this model's OOF predictions came from. Exactly one of these, `_bagged_mode`
+        # included, holds for a fitted model with OOF; see `has_oof` / `can_infer_oof`.
+        self._child_oof = False  # A single child produced them itself, without bagging (KNN LOO, RF OOB).
+        self._refit_oof = False  # Inherited from the folds a `refit_folds` fit discarded.
         self._cv_splitters = []  # Keeps track of the CV splitter used for each bagged repeat.
+        # Validation indices of the folds that produced `_oof_pred_proba`, one array per child.
+        # Only populated when the OOF predictions outlive the folds that made them
+        # (`refit_folds`), where `_cv_splitters` describes the refit's single child instead.
+        self._oof_fold_val_idx = None
         self._params_aux_child = None  # aux params of child model
+        # Whether fit forced fold-saving on despite `save_bag_folds=False` (children that
+        # cannot refit_full must keep a fold model to copy); see `save_bag_folds`.
+        self._save_bag_folds_forced = False
+        # `refit_folds="after_ensemble"`: the folds were fit for their out-of-fold predictions
+        # only and not kept; the trainer refits this bag on all rows once the ensemble has chosen
+        # it, so a bag the ensemble leaves out is never refit. See `TabularPredictor._post_fit`.
+        # Nothing of the folds is written to disk: `self.models` holds their names for the
+        # counts, and `_params_trained_children` what the refit template reads from them.
+        self._refit_folds_pending = False
+        self._params_trained_children: dict | None = None
 
         self._predict_n_size_lst = None  # A list of the predict row count for each child, useful to calculate the expected inference throughput of the bag.
 
@@ -103,29 +135,36 @@ class BaggedEnsembleModel(AbstractModel):
             # 'use_child_oof': False,  # [Advanced] Whether to defer to child model for OOF preds and only train a single child.
             "save_bag_folds": True,
             # 'refit_folds': False,  # [Advanced, Experimental] Whether to refit bags immediately to a refit_full model in a single .fit call.
+            #   "after_ensemble" defers the refit to the trainer, which refits only the bags the final ensemble uses.
             # 'num_folds' None,  # Number of bagged folds per set. If specified, overrides .fit `k_fold` value.
             # 'max_sets': None,  # Maximum bagged repeats to allow, if specified, will set `self.can_fit()` to `self._n_repeats_finished < max_repeats`
             "stratify": "auto",
             "bin": "auto",
             "n_bins": None,
+            "vary_seed_across_folds": False,  # If True, the seed used for each fold will be varied across folds.
+            "model_random_seed": 0,
+            "custom_splits": None,
         }
         for param, val in default_params.items():
             self._set_default_param_value(param, val)
         super()._set_default_params()
 
-    def _get_default_auxiliary_params(self) -> dict:
-        default_auxiliary_params = super()._get_default_auxiliary_params()
-        extra_auxiliary_params = dict(
-            drop_unique=False,  # TODO: Get the value from child instead
-        )
-        default_auxiliary_params.update(extra_auxiliary_params)
-        return default_auxiliary_params
-
     def is_valid(self) -> bool:
         return self.is_fit() and (self._n_repeats == self._n_repeats_finished)
 
+    @property
+    def save_bag_folds(self) -> bool:
+        """Effective fold-saving setting: the configured `save_bag_folds` hyperparameter,
+        unless fit forced fold-saving on (see `_save_bag_folds_forced`).
+        """
+        if self._save_bag_folds_forced:
+            return True
+        if self._refit_folds_pending:
+            return False
+        return self.params.get("save_bag_folds", True)
+
     def can_infer(self) -> bool:
-        return self.is_fit() and self.params.get("save_bag_folds", True)
+        return self.is_fit() and self.save_bag_folds
 
     def is_stratified(self) -> bool:
         """
@@ -136,7 +175,6 @@ class BaggedEnsembleModel(AbstractModel):
             return self.problem_type in [
                 BINARY,
                 MULTICLASS,
-
                 # Commented out due to inconclusive results on whether this is helpful when combined with binning
                 # REGRESSION,
                 # QUANTILE,
@@ -163,7 +201,10 @@ class BaggedEnsembleModel(AbstractModel):
         if not self._bagged_mode:
             return False
         # If max_sets is specified and the model has already fit >=max_sets, return False
-        return self._get_model_params().get("max_sets", None) is None or self._get_model_params().get("max_sets") > self._n_repeats_finished
+        return (
+            self._get_model_params().get("max_sets", None) is None
+            or self._get_model_params().get("max_sets") > self._n_repeats_finished
+        )
 
     def can_estimate_memory_usage_static_child(self) -> bool:
         """
@@ -177,8 +218,28 @@ class BaggedEnsembleModel(AbstractModel):
         """Returns the count of fitted children"""
         return len(self.models)
 
+    @property
+    def has_oof(self) -> bool:
+        """Whether this model carries out-of-fold predictions over the training data.
+
+        Structural rather than a check on `_oof_pred_proba`: `save(save_oof=True)` moves the
+        predictions to a side file and leaves the attribute None.
+        """
+        return self._bagged_mode or self._child_oof or self._refit_oof
+
+    @property
+    def can_infer_oof(self) -> bool:
+        """Whether OOF predictions can be *recomputed*, e.g. on permuted features.
+
+        Requires the per-fold models that produced the OOF, so this is False for both cases
+        where they are unavailable: `_child_oof`, where the OOF is internal to one model and
+        has no per-fold models to re-predict with, and `_refit_oof`, where `refit_folds`
+        discarded them. OOF permutation feature importance needs this.
+        """
+        return self.is_fit() and not (self._child_oof or self._refit_oof)
+
     def is_valid_oof(self) -> bool:
-        return self.is_fit() and (self._child_oof or self._bagged_mode)
+        return self.is_fit() and self.has_oof
 
     def predict_proba_oof(self, **kwargs) -> np.array:
         # TODO: Require is_valid == True (add option param to ignore is_valid)
@@ -186,10 +247,27 @@ class BaggedEnsembleModel(AbstractModel):
 
     @staticmethod
     def _predict_proba_oof(oof_pred_proba, oof_pred_model_repeats, return_type=np.float32) -> np.array:
-        oof_pred_model_repeats_without_0 = np.where(oof_pred_model_repeats == 0, 1, oof_pred_model_repeats)
+        """Average each row's fold predictions, emitting NaN for rows no fold validated.
+
+        A row with ``oof_pred_model_repeats == 0`` was never in a validation fold, so it has no
+        out-of-fold prediction. The accumulator still holds its initial 0 for that row, so
+        returning it as-is would present a fabricated prediction of 0 as a real one -- silently
+        wrong for anything that consumes out-of-fold predictions as features (a stacker) or as a
+        score (the weighted ensemble). NaN says "missing" instead, which consumers can detect;
+        ``score_with_oof`` masks these rows out via the same ``repeats`` array.
+
+        Partial coverage arises when folds are fit incrementally (``k_fold_start`` /
+        ``k_fold_end``) and when the validation scheme deliberately leaves rows unvalidated, as
+        forward-chaining temporal splits do with the earliest time block.
+        """
+        uncovered = oof_pred_model_repeats == 0
+        oof_pred_model_repeats_without_0 = np.where(uncovered, 1, oof_pred_model_repeats)
         if oof_pred_proba.ndim == 2:
             oof_pred_model_repeats_without_0 = oof_pred_model_repeats_without_0[:, None]
-        return (oof_pred_proba / oof_pred_model_repeats_without_0).astype(return_type)
+        oof_pred_proba = (oof_pred_proba / oof_pred_model_repeats_without_0).astype(return_type)
+        if uncovered.any():
+            oof_pred_proba[uncovered] = np.nan
+        return oof_pred_proba
 
     def _init_misc(self, **kwargs):
         child = self._get_model_base().convert_to_template()
@@ -219,6 +297,7 @@ class BaggedEnsembleModel(AbstractModel):
             stratify=self.is_stratified(),
             bin=self.is_binned(),
             n_bins=self.params.get("n_bins", None),
+            custom_splits=self.params.get("custom_splits", None),
             random_state=self._random_state,
         )
 
@@ -303,6 +382,17 @@ class BaggedEnsembleModel(AbstractModel):
         if use_child_oof and groups is not None:
             logger.log(20, f"\tForcing `use_child_oof=False` because `groups` is specified")
             use_child_oof = False
+        if use_child_oof and self.params.get("custom_splits", None) is not None:
+            # `use_child_oof` replaces cross-validation with the child model's own internal
+            # estimate (e.g. a random forest's out-of-bag predictions), which is built by
+            # resampling rows independently. Explicit splits are supplied precisely when rows are
+            # NOT independent -- group-disjoint or forward-in-time validation -- so that estimate
+            # would leak across the boundary the splits exist to enforce, and score far better
+            # than an honest one. Same reasoning as the `groups` case above; this covers the
+            # channel that grouped / temporal validation actually arrives through (`custom_splits`
+            # from `ag_args_ensemble`, or resolved from a `validation_structure`).
+            logger.log(20, "\tForcing `use_child_oof=False` because `custom_splits` is specified")
+            use_child_oof = False
         if use_child_oof:
             if self.is_fit():
                 # TODO: We may want to throw an exception instead and avoid calling fit more than once
@@ -354,12 +444,18 @@ class BaggedEnsembleModel(AbstractModel):
             #  Therefore we must override save_bag_folds for these unsupported models so that the refit versions have a fold model to copy.
             #  This could be implemented better by only keeping the first fold model artifact and avoid saving the other fold model artifacts (lower disk usage)
             #  However, this is complex to code accounting for the fitting strategies and would be prone to difficult to diagnose bugs.
-            self.params["save_bag_folds"] = True
+            self._save_bag_folds_forced = True
             if k_fold != 1:
                 # Only log in the situation where functionality is currently suboptimal
                 logger.log(20, "\tForcing `save_bag_folds=True` because child model does not support `refit_full`.")
 
-        save_bag_folds = self.params.get("save_bag_folds", True)
+        refit_folds = self.params.get("refit_folds", False)
+        if refit_folds == "after_ensemble":
+            # A child that cannot refit_full keeps its folds (forced above) and is copied by the
+            # refit instead, so nothing is pending for it.
+            self._refit_folds_pending = can_refit_full and k_fold != 1
+            refit_folds = False
+        save_bag_folds = self.save_bag_folds
         if k_fold == 1:
             self._fit_single(
                 X=X,
@@ -373,12 +469,15 @@ class BaggedEnsembleModel(AbstractModel):
             )
             return self
         else:
-            refit_folds = self.params.get("refit_folds", False)
             if refit_folds:
                 if n_repeat_start != 0 or k_fold_start != 0:
-                    raise AssertionError(f"n_repeat_start and k_fold_start must be 0 with refit_folds=True, values: ({n_repeat_start}, {k_fold_start})")
+                    raise AssertionError(
+                        f"n_repeat_start and k_fold_start must be 0 with refit_folds=True, values: ({n_repeat_start}, {k_fold_start})"
+                    )
                 if k_fold_end != k_fold:
-                    raise AssertionError(f"k_fold_end and k_fold must be equal with refit_folds=True, values: ({k_fold_end}, {k_fold})")
+                    raise AssertionError(
+                        f"k_fold_end and k_fold must be equal with refit_folds=True, values: ({k_fold_end}, {k_fold})"
+                    )
                 save_bag_folds = False
                 if kwargs.get("time_limit", None) is not None:
                     fold_start = n_repeat_start * k_fold + k_fold_start
@@ -411,17 +510,57 @@ class BaggedEnsembleModel(AbstractModel):
                 refit_template.fit(X=X, y=y, k_fold=1, _skip_oof=True, **kwargs)
                 refit_template._oof_pred_proba = self._oof_pred_proba
                 refit_template._oof_pred_model_repeats = self._oof_pred_model_repeats
-                refit_template._child_oof = True
+                # These OOF predictions were made by the folds fit just above, not by the refit's
+                # single child, and `refit_template`'s own splitter knows nothing about them.
+                # Record the provenance, and carry the folds' validation indices over so each OOF
+                # row can still be attributed to the fold that produced it.
+                refit_template._refit_oof = True
+                refit_template._oof_fold_val_idx = self._get_oof_fold_val_idx_from_splitters(X=X, y=y)
                 refit_template.fit_time += self.fit_time + self.predict_time
                 refit_template.predict_time = self.predict_time
                 return refit_template
             else:
                 return self
 
+    def get_oof_fold_val_idx(self, X: pd.DataFrame, y: pd.Series) -> list[np.ndarray]:
+        """Validation rows behind this model's OOF predictions, one entry per child.
+
+        Entries are positions into `X`, uniformly across the cases below.
+
+        Covers all three ways a model can come to have OOF, so callers do not have to branch on
+        the provenance flags themselves:
+
+        - bagged: each fold's validation rows, from the splitters that produced them.
+        - `_refit_oof`: the indices carried over from the folds the refit discarded.
+        - `_child_oof`: one entry spanning every row, since a single child produced the OOF for
+          all of them.
+
+        Raises if the model has no OOF to describe.
+        """
+        if not self.has_oof:
+            raise AssertionError(f"Model has no out-of-fold predictions (model={self.name})")
+        if self._refit_oof:
+            if self._oof_fold_val_idx is None:
+                raise AssertionError(
+                    f"Fold validation indices were dropped with the OOF predictions (model={self.name})"
+                )
+            return self._oof_fold_val_idx
+        if self._child_oof:
+            return [np.arange(len(X))]
+        return self._get_oof_fold_val_idx_from_splitters(X=X, y=y)
+
+    def _get_oof_fold_val_idx_from_splitters(self, X: pd.DataFrame, y: pd.Series) -> list[np.ndarray]:
+        """Validation indices of each fitted fold, in child order, as positions into `X`."""
+        all_kfolds = []
+        for n_repeat, k in enumerate(self._k_per_n_repeat):
+            kfolds = self._cv_splitters[n_repeat].split(X=X, y=y)
+            all_kfolds += kfolds[n_repeat * k : (n_repeat + 1) * k]
+        return [val_idx for _train_idx, val_idx in all_kfolds]
+
     def validate_fit_args(self, X: pd.DataFrame, **kwargs):
-        super().validate_fit_args(X=X, **kwargs)
+        super().validate_fit_args(X=X, feature_metadata=self._feature_metadata, **kwargs)
         model_base = self._get_model_base()
-        model_base.validate_fit_args(X=X, **kwargs)
+        model_base.validate_fit_args(X=X, feature_metadata=self._feature_metadata, **kwargs)
 
     def _update_k_fold(self, k_fold: int, k_fold_end: int = None, verbose: bool = True) -> tuple[int, int]:
         """Update k_fold and k_fold_end in case num_folds was specified"""
@@ -429,7 +568,10 @@ class BaggedEnsembleModel(AbstractModel):
         if k_fold_override is not None:
             if k_fold is not None:
                 if k_fold != k_fold_override and verbose:
-                    logger.log(20, f"\tSetting folds to {k_fold_override}. Ignoring `k_fold={k_fold}` because `num_folds={k_fold_override}` overrides.")
+                    logger.log(
+                        20,
+                        f"\tSetting folds to {k_fold_override}. Ignoring `k_fold={k_fold}` because `num_folds={k_fold_override}` overrides.",
+                    )
                 if k_fold_end is not None and k_fold_end == k_fold:
                     k_fold_end = k_fold_override
             k_fold = k_fold_override
@@ -453,7 +595,9 @@ class BaggedEnsembleModel(AbstractModel):
     ):
         if groups is not None:
             if self._n_repeats_finished != 0:
-                raise AssertionError("Bagged models cannot call fit with `groups` specified when a full k-fold set has already been fit.")
+                raise AssertionError(
+                    "Bagged models cannot call fit with `groups` specified when a full k-fold set has already been fit."
+                )
             if n_repeats > 1:
                 raise AssertionError("Cannot perform repeated bagging with `groups` specified.")
             return
@@ -465,19 +609,27 @@ class BaggedEnsembleModel(AbstractModel):
         if k_fold < 1:
             raise ValueError(f"k_fold must be equal or greater than 1, value: {k_fold}")
         if n_repeat_start != self._n_repeats_finished:
-            raise ValueError(f"n_repeat_start must equal self._n_repeats_finished, values: ({n_repeat_start}, {self._n_repeats_finished})")
+            raise ValueError(
+                f"n_repeat_start must equal self._n_repeats_finished, values: ({n_repeat_start}, {self._n_repeats_finished})"
+            )
         if n_repeats <= n_repeat_start:
             raise ValueError(f"n_repeats must be greater than n_repeat_start, values: ({n_repeats}, {n_repeat_start})")
         if k_fold_start != self._k_fold_end:
-            raise ValueError(f"k_fold_start must equal previous k_fold_end, values: ({k_fold_start}, {self._k_fold_end})")
+            raise ValueError(
+                f"k_fold_start must equal previous k_fold_end, values: ({k_fold_start}, {self._k_fold_end})"
+            )
         if k_fold_start >= k_fold_end:
             # TODO: Remove this limitation if n_repeats > 1
             raise ValueError(f"k_fold_end must be greater than k_fold_start, values: ({k_fold_end}, {k_fold_start})")
         if (n_repeats - n_repeat_start) > 1 and k_fold_end != k_fold:
             # TODO: Remove this limitation
-            raise ValueError(f"k_fold_end must equal k_fold when (n_repeats - n_repeat_start) > 1, values: ({k_fold_end}, {k_fold})")
+            raise ValueError(
+                f"k_fold_end must equal k_fold when (n_repeats - n_repeat_start) > 1, values: ({k_fold_end}, {k_fold})"
+            )
         if self._k is not None and self._k != k_fold:
-            raise ValueError(f"k_fold must equal previously fit k_fold value for the current n_repeat, values: ({k_fold}, {self._k})")
+            raise ValueError(
+                f"k_fold must equal previously fit k_fold value for the current n_repeat, values: ({k_fold}, {self._k})"
+            )
         if use_child_oof and not self._get_tags_child().get("valid_oof", False):
             raise AssertionError(
                 f"`use_child_oof=True` was specified, "
@@ -485,7 +637,12 @@ class BaggedEnsembleModel(AbstractModel):
                 f"\tTo enable this logic, `{self._child_type.__name__}._predict_proba_oof` must be implemented "
                 f"and `tags['valid_oof'] = True` must be set in `{self._child_type.__name__}._more_tags`."
             )
-        if k_fold == 1 and not skip_oof and not use_child_oof and not self._get_tags().get("can_get_oof_from_train", False):
+        if (
+            k_fold == 1
+            and not skip_oof
+            and not use_child_oof
+            and not self._get_tags().get("can_get_oof_from_train", False)
+        ):
             logger.log(
                 30,
                 f"\tWARNING: Fitting bagged model with `k_fold=1`, "
@@ -494,7 +651,7 @@ class BaggedEnsembleModel(AbstractModel):
                 f"\t\tIt will then predict on the same data used to train for generating out-of-fold predictions. "
                 f"This will likely be EXTREMELY overfit and produce terrible results.\n"
                 f"\t\tWe strongly recommend not forcing bagged models to use `k_fold=1`. "
-                f"Instead, specify `use_child_oof=True` if the model supports this option."
+                f"Instead, specify `use_child_oof=True` if the model supports this option.",
             )
 
     def predict_proba_children(
@@ -586,73 +743,17 @@ class BaggedEnsembleModel(AbstractModel):
         return pred_children
 
     def _predict_proba_internal(self, X, *, normalize: bool | None = None, **kwargs):
-
-        if (self._resources_usage_config is None) or (self._resources_usage_config.usage_strategy == "sequential"):
-            model = self.load_child(self.models[0])
-            X = self.preprocess(X, model=model, **kwargs)
-            y_pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
-            for model in self.models[1:]:
-                model = self.load_child(model)
-                y_pred_proba += model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
-            y_pred_proba = y_pred_proba / self.n_children
-        else:
-            assert self._resources_usage_config.usage_strategy == "parallel", (
-                f"Invalid resources usage strategy: {self._resources_usage_config.usage_strategy}"
-            )
-
-            y_pred_proba = self._parallel_predict_proba(X=X, normalize=normalize, **kwargs)
-
+        model = self.load_child(self.models[0])
+        X = self.preprocess(X, model=model, **kwargs)
+        y_pred_proba = model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+        for model in self.models[1:]:
+            model = self.load_child(model)
+            y_pred_proba += model.predict_proba(X=X, preprocess_nonadaptive=False, normalize=normalize)
+        y_pred_proba = y_pred_proba / self.n_children
         return y_pred_proba
 
     def _predict_proba(self, X, normalize=False, **kwargs) -> np.ndarray:
         return self.predict_proba(X=X, normalize=normalize, **kwargs)
-
-    def _parallel_predict_proba(self, X, *, normalize: bool | None = None, **kwargs) -> np.ndarray:
-        """Parallel prediction using Ray."""
-        import ray
-        assert ray.is_initialized(), "Ray must be initialized for parallel predicts"
-
-        # TODO: determine the impact of forcing preprocess_nonadaptive=True for all child models.
-        #   - We can not always load self.models[0] for GPU models here.
-        X_ref = ray.put(X) # self.preprocess(X, model=self.load_child(self.models[0]), **kwargs)
-        self_ref = ray.put(self)
-
-        remote_func = ray.remote(
-            num_cpus=self._params_aux_child.get("num_cpus", 1),
-            num_gpus=self._params_aux_child.get("num_gpus", 0),
-            max_calls=self.n_children,
-            max_retries=0,
-            retry_exceptions=False
-        )(_func_remote_pred_proba)
-
-        unfinished = []
-        job_refs_map = {}
-        for job_index, model in enumerate(self.models):
-            result_ref = remote_func.remote(
-                _self=self_ref,
-                model_name=model,
-                X=X_ref,
-                normalize=normalize,
-                kwargs=kwargs,
-            )
-            unfinished.append(result_ref)
-            job_refs_map[result_ref] = job_index
-            time.sleep(0.1)
-
-        # This function creates a memory overhead to have a deterministic way of summing the pred_proba across children.
-        pred_proba_list = []
-        while unfinished:
-            finished, unfinished = ray.wait(unfinished, num_returns=1)
-            pred_proba_list.append((job_refs_map[finished[0]], ray.get(finished[0])))
-
-        pred_proba_list = [r for _, r in sorted(pred_proba_list, key=lambda x: x[0])]
-        pred_proba = np.sum(pred_proba_list, axis=0) / self.n_children
-
-        # Clean up ray
-        ray.internal.free(object_refs=[self_ref, X_ref])
-        del self_ref, X_ref
-
-        return pred_proba
 
     def score_with_oof(self, y, sample_weight=None):
         self._load_oof()
@@ -678,7 +779,9 @@ class BaggedEnsembleModel(AbstractModel):
         if self.is_fit():
             raise AssertionError("Model is already fit.")
         if self._n_repeats != 0:
-            raise ValueError(f"n_repeats must equal 0 when fitting a single model with k_fold == 1, value: {self._n_repeats}")
+            raise ValueError(
+                f"n_repeats must equal 0 when fitting a single model with k_fold == 1, value: {self._n_repeats}"
+            )
         model_base.name = f"{model_base.name}S1F1"
         model_base.set_contexts(path_context=os.path.join(self.path, model_base.name))
         time_start_fit = time.time()
@@ -696,7 +799,20 @@ class BaggedEnsembleModel(AbstractModel):
         else:
             X_fit = X
             y_fit = y
-        model_base.fit(X=X_fit, y=y_fit, time_limit=time_limit, **kwargs)
+        log_resources_prefix = f"Fitting 1 model on all data"
+        if use_child_oof:
+            log_resources_prefix += f" (use_child_oof={use_child_oof})"
+        log_resources_prefix += " | "
+
+        model_base.fit(
+            X=X_fit,
+            y=y_fit,
+            time_limit=time_limit,
+            random_seed=self.random_seed,
+            log_resources=True,
+            log_resources_prefix=log_resources_prefix,
+            **kwargs,
+        )
         model_base.fit_time = time.time() - time_start_fit
         model_base.predict_time = None
         if not skip_oof:
@@ -728,7 +844,8 @@ class BaggedEnsembleModel(AbstractModel):
 
             if use_child_oof:
                 logger.log(
-                    15, "\t`use_child_oof` was specified for this model. It will function similarly to a bagged model, but will only fit one child model."
+                    15,
+                    "\t`use_child_oof` was specified for this model. It will function similarly to a bagged model, but will only fit one child model.",
                 )
                 time_start_predict = time.time()
                 if model_base._get_tags().get("valid_oof", False):
@@ -755,11 +872,13 @@ class BaggedEnsembleModel(AbstractModel):
                         f'\t\tIf this is intended, set the model tag "can_get_oof_from_train" to True '
                         f"in `{self.__class__.__name__}._more_tags` to avoid this warning.",
                     )
-                self._oof_pred_proba = model_base.predict_proba(X=X)  # TODO: Cheater value, will be overfit to valid set
+                self._oof_pred_proba = model_base.predict_proba(
+                    X=X
+                )  # TODO: Cheater value, will be overfit to valid set
             self._oof_pred_model_repeats = np.ones(shape=len(X), dtype=np.uint8)
         model_base.record_predict_info(X=X)
         model_base.reduce_memory_size(remove_fit=True, remove_info=False, requires_save=True)
-        if not self.params.get("save_bag_folds", True):
+        if not self.save_bag_folds:
             model_base.model = None
         if self.low_memory:
             self.save_child(model_base)
@@ -776,7 +895,9 @@ class BaggedEnsembleModel(AbstractModel):
     def _get_default_fold_fitting_strategy(self):
         try:
             try_import_ray()
-            fold_fitting_strategy = "parallel_distributed" if DistributedContext.is_distributed_mode() else "parallel_local"
+            fold_fitting_strategy = (
+                "parallel_distributed" if DistributedContext.is_distributed_mode() else "parallel_local"
+            )
         except Exception as e:
             warning_msg = f"Will use sequential fold fitting strategy because import of ray failed. Reason: {str(e)}"
             dup_filter.attach_filter_targets(warning_msg)
@@ -803,12 +924,15 @@ class BaggedEnsembleModel(AbstractModel):
                 fold_fitting_strategy = ParallelDistributedFoldFittingStrategy
             if disable_parallel_fitting:
                 fold_fitting_strategy = SequentialLocalFoldFittingStrategy
-                logger.log(20, f"\t{model_base.__class__.__name__} does not support parallel folding yet. Will use sequential folding instead")
+                logger.log(
+                    20,
+                    f"\t{model_base.__class__.__name__} does not support parallel folding yet. Will use sequential folding instead",
+                )
         elif fold_fitting_strategy == "sequential_local":
             fold_fitting_strategy = SequentialLocalFoldFittingStrategy
         else:
             raise ValueError(
-                f"{fold_fitting_strategy} is not a valid option for fold_fitting_strategy" "Valid options are: parallel_local and sequential_local"
+                f"{fold_fitting_strategy} is not a valid option for fold_fitting_strategy. Valid options are: parallel_local and sequential_local"
             )
         return fold_fitting_strategy
 
@@ -832,6 +956,11 @@ class BaggedEnsembleModel(AbstractModel):
         num_gpus: float = None,
         **kwargs,
     ):
+        # This bag's `validate_fit_args` already validated the fit constraints against the full
+        # training data, for itself and for the child template. Every fold model is a deepcopy of
+        # `model_base` fit on a (k-1)/k slice, so re-validating there would reject models the bag
+        # correctly accepted (e.g. `ag.min_rows` satisfied by the full split but not by a slice).
+        model_base._fit_constraints_validated_upstream = True
         fold_fitting_strategy_cls = self._get_fold_fitting_strategy(model_base=model_base, num_gpus=num_gpus)
         # TODO: Preprocess data here instead of repeatedly
         # FIXME: Raise exception if multiclass/binary and a single val fold contains all instances of a class. (Can happen if custom groups is specified)
@@ -856,6 +985,8 @@ class BaggedEnsembleModel(AbstractModel):
             k_fold_end=k_fold_end,
             n_repeat_start=n_repeat_start,
             n_repeat_end=n_repeats,
+            vary_seed_across_folds=self.params["vary_seed_across_folds"],
+            random_seed_offset=self.params["model_random_seed"],
         )
 
         fold_fit_args_list = [dict(fold_ctx=fold_ctx) for fold_ctx in fold_fit_args_list]
@@ -889,7 +1020,9 @@ class BaggedEnsembleModel(AbstractModel):
         if issubclass(fold_fitting_strategy_cls, ParallelFoldFittingStrategy):
             fold_fitting_strategy_args["num_jobs"] = num_folds
             fold_fitting_strategy_args["num_folds_parallel"] = num_folds_parallel
-        if (fold_fitting_strategy_cls == ParallelDistributedFoldFittingStrategy) and (not DistributedContext.is_shared_network_file_system()):
+        if (fold_fitting_strategy_cls == ParallelDistributedFoldFittingStrategy) and (
+            not DistributedContext.is_shared_network_file_system()
+        ):
             fold_fitting_strategy_args["model_sync_path"] = DistributedContext.get_model_sync_path()
         fold_fitting_strategy: FoldFittingStrategy = fold_fitting_strategy_cls(**fold_fitting_strategy_args)
 
@@ -899,21 +1032,21 @@ class BaggedEnsembleModel(AbstractModel):
             num_gpus_per = fold_fitting_strategy.resources_model["num_gpus"]
             mem_est_proportion_per_fold = fold_fitting_strategy.mem_est_proportion_per_fold()
             extra_log = (
-                f" ({num_parallel_jobs} workers, " f"per: cpus={num_cpus_per}, gpus={num_gpus_per}, " f"memory={(100*mem_est_proportion_per_fold):.2f}%)"
+                f" ({num_parallel_jobs} workers, "
+                f"per: cpus={num_cpus_per}, gpus={num_gpus_per}, "
+                f"memory={(100 * mem_est_proportion_per_fold):.2f}%)"
             )
         elif isinstance(fold_fitting_strategy, SequentialLocalFoldFittingStrategy):
             num_cpus_per = fold_fitting_strategy.resources["num_cpus"]
             num_gpus_per = fold_fitting_strategy.resources["num_gpus"]
-            extra_log = (
-                f" (sequential: cpus={num_cpus_per}, gpus={num_gpus_per})"
-            )
+            extra_log = f" (sequential: cpus={num_cpus_per}, gpus={num_gpus_per})"
         else:
             extra_log = ""
 
         logger.log(
             20,
             f"\tFitting {len(fold_fit_args_list)} child models "
-            f'({fold_fit_args_list[0]["fold_ctx"]["model_name_suffix"]} - {fold_fit_args_list[-1]["fold_ctx"]["model_name_suffix"]}) | '
+            f"({fold_fit_args_list[0]['fold_ctx']['model_name_suffix']} - {fold_fit_args_list[-1]['fold_ctx']['model_name_suffix']}) | "
             f"Fitting with {fold_fitting_strategy.__class__.__name__}"
             f"{extra_log}",
         )
@@ -922,6 +1055,14 @@ class BaggedEnsembleModel(AbstractModel):
         for fold_fit_args in fold_fit_args_list:
             fold_fitting_strategy.schedule_fold_model_fit(**fold_fit_args)
         fold_fitting_strategy.after_all_folds_scheduled()
+        if self._refit_folds_pending:
+            # The refit needs nothing of the folds but their trained parameters (their times went
+            # into the bag as they finished, their predictions into the OOF arrays), so those are
+            # taken now and the fold models are not kept: the strategies hand them back as
+            # weightless objects, or as `_UnsavedFold` records from Ray workers, never as files.
+            self._params_trained_children = self._get_compressed_params(
+                model_params_list=[child.params_trained for child in models]
+            )
 
         # Do this to maintain model name order based on kfold split regardless of which model finished first in parallel mode
         for fold_fit_args in fold_fit_args_list:
@@ -959,6 +1100,8 @@ class BaggedEnsembleModel(AbstractModel):
         k_fold_end: int,
         n_repeat_start: int,
         n_repeat_end: int,
+        vary_seed_across_folds: bool,
+        random_seed_offset: int,
     ) -> (list, int, int):
         """
         Generates fold configs given a cv_splitter, k_fold start-end and n_repeat start-end.
@@ -994,9 +1137,11 @@ class BaggedEnsembleModel(AbstractModel):
                     folds_to_fit=folds_to_fit,
                     folds_finished=fold - fold_start,
                     folds_left=fold_end - fold,
+                    random_seed=random_seed_offset + fold if vary_seed_across_folds else random_seed_offset,
                 )
 
                 fold_fit_args_list.append(fold_ctx)
+
             if fold_in_set_end == k_fold:
                 n_repeats_finished += 1
 
@@ -1068,7 +1213,9 @@ class BaggedEnsembleModel(AbstractModel):
             # FIXME: use FULL features (children can have different features)
             features = self.load_child(model=self.models[0]).features
         if not is_oof and not from_children:
-            return super().compute_feature_importance(X, y, features=features, time_limit=time_limit, silent=silent, **kwargs)
+            return super().compute_feature_importance(
+                X, y, features=features, time_limit=time_limit, silent=silent, **kwargs
+            )
         fi_fold_list = []
         model_index = 0
         if time_limit is not None:
@@ -1087,7 +1234,7 @@ class BaggedEnsembleModel(AbstractModel):
         log_final_suffix = ""
         for n_repeat, k in enumerate(self._k_per_n_repeat):
             if is_oof:
-                if self._child_oof or not self._bagged_mode:
+                if not self.can_infer_oof:
                     raise AssertionError(
                         "Model trained with no validation data cannot get feature importance on training data, please specify new test data to compute feature importances (model=%s)"
                         % self.name
@@ -1147,10 +1294,18 @@ class BaggedEnsembleModel(AbstractModel):
 
     def load_child(self, model: AbstractModel | str, verbose: bool = False) -> AbstractModel:
         if isinstance(model, str):
-            child_path = self.create_contexts(os.path.join(self.path, model))
-            return self._child_type.load(path=child_path, verbose=verbose)
+            if self._refit_folds_pending:
+                raise AssertionError(
+                    f"{self.name} was fit with refit_folds='after_ensemble' and kept no fold models; "
+                    "refit it (`refit_full`) before using it."
+                )
+            return self._load_child_from_disk(model, verbose=verbose)
         else:
             return model
+
+    def _load_child_from_disk(self, model_name: str, verbose: bool = False) -> AbstractModel:
+        child_path = self.create_contexts(os.path.join(self.path, model_name))
+        return self._child_type.load(path=child_path, verbose=verbose)
 
     def add_child(self, model: AbstractModel | str, add_child_times: bool = False, add_child_resources: bool = False):
         """
@@ -1237,10 +1392,18 @@ class BaggedEnsembleModel(AbstractModel):
         model_full_template = self.__class__(**init_args)
         return model_full_template
 
+    def declared_refit_hyperparameters(self) -> dict:
+        """Declared on the child: the bag wrapper has no hyperparameters of its own to override."""
+        return self._get_model_base().declared_refit_hyperparameters()
+
     def convert_to_refit_full_template_child(self) -> AbstractModel:
+        model_base = self._get_model_base()
         refit_params_trained = self._get_compressed_params_trained()
-        refit_params = copy.deepcopy(self._get_model_base().get_params())
-        refit_params["hyperparameters"].update(refit_params_trained)
+        refit_params = copy.deepcopy(model_base.get_params())
+        self._update_hyperparameters_with_params_trained(refit_params["hyperparameters"], refit_params_trained)
+        # `ag.refit_hyperparameters` is declared on the child, since it names the child's
+        # hyperparameters -- the bag wrapper has none of its own to override.
+        self._apply_refit_hyperparameters(refit_params["hyperparameters"])
         refit_child_template = self._child_type(**refit_params)
 
         return refit_child_template
@@ -1250,7 +1413,7 @@ class BaggedEnsembleModel(AbstractModel):
         Creates a new refit_full variant of the model, but instead of training it simply copies `self` while keeping only the first fold model.
         This method is for compatibility with models that have not implemented refit_full support as a fallback.
         """
-        if not self.params.get("save_bag_folds", True):
+        if not self.save_bag_folds:
             raise AssertionError("Cannot perform copy-based refit_full when save_bag_folds is False!")
         __models = self.models
         self.models = []
@@ -1278,7 +1441,9 @@ class BaggedEnsembleModel(AbstractModel):
         init_args.pop("problem_type")
         return init_args
 
-    def get_hyperparameters_init_child(self, include_ag_args_ensemble: bool = False, child_model: AbstractModel = None) -> dict:
+    def get_hyperparameters_init_child(
+        self, include_ag_args_ensemble: bool = False, child_model: AbstractModel = None
+    ) -> dict:
         """
 
         Returns
@@ -1329,6 +1494,8 @@ class BaggedEnsembleModel(AbstractModel):
         return model_params_compressed
 
     def _get_compressed_params_trained(self):
+        if self._params_trained_children is not None:
+            return dict(self._params_trained_children)
         model_params_list = [self.load_child(child).params_trained for child in self.models]
         return self._get_compressed_params(model_params_list=model_params_list)
 
@@ -1339,7 +1506,9 @@ class BaggedEnsembleModel(AbstractModel):
             return self.model_base
 
     def _add_child_times_to_bag(self, model: AbstractModel):
-        self._add_parallel_child_times(fit_time=model.fit_time, predict_time=model.predict_time, predict_1_time=model.predict_1_time)
+        self._add_parallel_child_times(
+            fit_time=model.fit_time, predict_time=model.predict_time, predict_1_time=model.predict_1_time
+        )
         assert model.predict_n_size is not None
         self._add_predict_n_size(predict_n_size_lst=[model.predict_n_size])
 
@@ -1399,7 +1568,9 @@ class BaggedEnsembleModel(AbstractModel):
         return np.ceil(np.mean(self._predict_n_size_lst))
 
     @classmethod
-    def load(cls, path: str, reset_paths: bool = True, low_memory: bool = True, load_oof: bool = False, verbose: bool = True):
+    def load(
+        cls, path: str, reset_paths: bool = True, low_memory: bool = True, load_oof: bool = False, verbose: bool = True
+    ):
         model = super().load(path=path, reset_paths=reset_paths, verbose=verbose)
         if not low_memory:
             model.persist_child_models(reset_paths=reset_paths)
@@ -1481,8 +1652,18 @@ class BaggedEnsembleModel(AbstractModel):
 
     # If `remove_fit_stack=True`, variables will be removed that are required to fit more folds and to fit new stacker models which use this model as a base model.
     #  This includes OOF variables.
-    def reduce_memory_size(self, remove_fit_stack=False, remove_fit=True, remove_info=False, requires_save=True, reduce_children=False, **kwargs):
-        super().reduce_memory_size(remove_fit=remove_fit, remove_info=remove_info, requires_save=requires_save, **kwargs)
+    def reduce_memory_size(
+        self,
+        remove_fit_stack=False,
+        remove_fit=True,
+        remove_info=False,
+        requires_save=True,
+        reduce_children=False,
+        **kwargs,
+    ):
+        super().reduce_memory_size(
+            remove_fit=remove_fit, remove_info=remove_info, requires_save=requires_save, **kwargs
+        )
         if remove_fit_stack:
             try:
                 os.remove(os.path.join(self.path, "utils", self._oof_filename))
@@ -1491,6 +1672,8 @@ class BaggedEnsembleModel(AbstractModel):
             if requires_save:
                 self._oof_pred_proba = None
                 self._oof_pred_model_repeats = None
+                # Describes the OOF predictions just discarded, so it is dead weight without them.
+                self._oof_fold_val_idx = None
             try:
                 os.remove(os.path.join(self.path, "utils", "model_template.pkl"))
             except FileNotFoundError:
@@ -1501,10 +1684,12 @@ class BaggedEnsembleModel(AbstractModel):
                 os.rmdir(os.path.join(self.path, "utils"))
             except OSError:
                 pass
-        if reduce_children:
+        if reduce_children and not self._refit_folds_pending:
             for model in self.models:
                 model = self.load_child(model)
-                model.reduce_memory_size(remove_fit=remove_fit, remove_info=remove_info, requires_save=requires_save, **kwargs)
+                model.reduce_memory_size(
+                    remove_fit=remove_fit, remove_info=remove_info, requires_save=requires_save, **kwargs
+                )
                 if requires_save and self.low_memory:
                     self.save_child(model=model)
 
@@ -1513,7 +1698,23 @@ class BaggedEnsembleModel(AbstractModel):
 
     def get_info(self, include_feature_metadata: bool = True):
         info = super().get_info(include_feature_metadata=include_feature_metadata)
-        children_info = self._get_child_info(include_feature_metadata=include_feature_metadata)
+        # Everything reported about the children is read in one pass, loading each child once: a child held
+        # as a name is deserialized from disk, which for a model that carries large weights dominates this call.
+        # Only the first child's hyperparameters are kept, so at most one loaded child is alive at a time.
+        children_info = dict()
+        children_params_trained = []
+        child_hyperparameters_info = None
+        for model in [] if self._refit_folds_pending else self.models:
+            child = self.load_child(model)
+            children_info[child.name] = child.get_info(include_feature_metadata=include_feature_metadata)
+            children_params_trained.append(child.params_trained)
+            if child_hyperparameters_info is None:
+                child_hyperparameters_info = self._get_child_hyperparameters_info(child_model=child)
+        if child_hyperparameters_info is None:
+            # No fitted child to read from. A fitted child is preferred over the template whenever one
+            # exists because `save_space` deletes `model_base`.
+            child_hyperparameters_info = self._get_child_hyperparameters_info(child_model=self._get_model_base())
+        child_hyperparameters, child_ag_args_fit, child_hyperparameters_user = child_hyperparameters_info
         child_memory_sizes = [child["memory_size"] for child in children_info.values()]
         sum_memory_size_child = sum(child_memory_sizes)
         if child_memory_sizes:
@@ -1526,15 +1727,6 @@ class BaggedEnsembleModel(AbstractModel):
         else:
             max_memory_size = info["memory_size"]
             min_memory_size = info["memory_size"] - sum_memory_size_child + max_memory_size_child
-
-        # Necessary if save_space is used as save_space deletes model_base.
-        if self.n_children > 0:
-            child_model = self.load_child(self.models[0])
-        else:
-            child_model = self._get_model_base()
-        child_hyperparameters = child_model.params
-        child_ag_args_fit = child_model.params_aux
-        child_hyperparameters_user = self.get_hyperparameters_init_child(include_ag_args_ensemble=False, child_model=child_model)
 
         bagged_info = dict(
             child_model_type=self._child_type.__name__,
@@ -1552,7 +1744,7 @@ class BaggedEnsembleModel(AbstractModel):
             min_memory_size=min_memory_size,  # Memory used when only the largest child is loaded into memory.
             child_hyperparameters=child_hyperparameters,
             child_hyperparameters_user=child_hyperparameters_user,
-            child_hyperparameters_fit=self._get_compressed_params_trained(),
+            child_hyperparameters_fit=self._get_compressed_params(model_params_list=children_params_trained),
             child_ag_args_fit=child_ag_args_fit,
         )
         info["bagged_info"] = bagged_info
@@ -1565,11 +1757,19 @@ class BaggedEnsembleModel(AbstractModel):
         return info
 
     def get_memory_size(self, allow_exception: bool = False) -> int | None:
+        """The bag's own size, without its children (each child reports its own)."""
         models = self.models
         self.models = None
-        memory_size = super().get_memory_size(allow_exception=allow_exception)
-        self.models = models
-        return memory_size
+        try:
+            return super().get_memory_size(allow_exception=allow_exception)
+        finally:
+            self.models = models
+
+    def _get_memory_size(self) -> int:
+        # With the children detached the pickle holds the template, the out-of-fold predictions and
+        # bookkeeping, so the gc pass the base implementation runs to make room for a full pickle is
+        # skipped: in a loaded process it costs far more than the pickle itself.
+        return self._get_pickled_size()
 
     def validate_fit_resources(self, **kwargs):
         self._get_model_base().validate_fit_resources(**kwargs)
@@ -1584,17 +1784,12 @@ class BaggedEnsembleModel(AbstractModel):
         # memory is checked downstream on the child model
         return None, None
 
-    def _get_child_info(self, include_feature_metadata: bool = True) -> dict:
-        child_info_dict = dict()
-        for model in self.models:
-            if isinstance(model, str):
-                child_path = self.create_contexts(os.path.join(self.path, model))
-                child_info_dict[model] = self._child_type.load_info(child_path)
-                if not include_feature_metadata:
-                    child_info_dict[model].pop("feature_metadata", None)
-            else:
-                child_info_dict[model.name] = model.get_info(include_feature_metadata=include_feature_metadata)
-        return child_info_dict
+    def _get_child_hyperparameters_info(self, child_model: AbstractModel) -> tuple[dict, dict, dict]:
+        """A child's hyperparameters as `get_info` reports them: full, `ag_args_fit`, and user-specified."""
+        child_hyperparameters_user = self.get_hyperparameters_init_child(
+            include_ag_args_ensemble=False, child_model=child_model
+        )
+        return child_model.params, child_model.params_aux, child_hyperparameters_user
 
     def _construct_empty_oof(self, X: pd.DataFrame, y: pd.Series) -> tuple[np.array, np.array]:
         if self.problem_type == MULTICLASS:
@@ -1658,7 +1853,9 @@ class BaggedEnsembleModel(AbstractModel):
         # We set soft time limit to avoid trials being terminated directly by ray tune
         trial_soft_time_limit = None
         if hpo_executor.time_limit is not None:
-            trial_soft_time_limit = max(hpo_executor.time_limit * 0.9, hpo_executor.time_limit - 5)  # 5 seconds max for buffer
+            trial_soft_time_limit = max(
+                hpo_executor.time_limit * 0.9, hpo_executor.time_limit - 5
+            )  # 5 seconds max for buffer
 
         fit_kwargs = copy.deepcopy(kwargs)
         fit_kwargs["k_fold"] = k_fold
@@ -1681,7 +1878,9 @@ class BaggedEnsembleModel(AbstractModel):
             is_bagged_model=True,
         )
 
-        minimum_resources_per_fold = self.get_minimum_resources(is_gpu_available=(hpo_executor.resources.get("num_gpus", 0) > 0))
+        minimum_resources_per_fold = self.get_minimum_resources(
+            is_gpu_available=(hpo_executor.resources.get("num_gpus", 0) > 0)
+        )
         minimum_cpu_per_fold = minimum_resources_per_fold.get("num_cpus", 1)
         minimum_gpu_per_fold = minimum_resources_per_fold.get("num_gpus", 0)
 
@@ -1717,8 +1916,3 @@ class BaggedEnsembleModel(AbstractModel):
     def _get_tags_child(self) -> dict:
         """Gets the tags of the child model."""
         return self._get_model_base()._get_tags()
-
-
-def _func_remote_pred_proba(*, _self, model_name, X, normalize, kwargs: dict) -> np.ndarray:
-    model = _self.load_child(model_name)
-    return model.predict_proba(X=_self.preprocess(X, model=model, **kwargs), preprocess_nonadaptive=False, normalize=normalize)

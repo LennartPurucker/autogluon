@@ -1,8 +1,7 @@
 import warnings
-from typing import Optional, Sequence, Tuple, Union, overload
+from typing import Sequence, overload
 
 import numpy as np
-import numpy.typing as npt
 import pandas as pd
 
 from autogluon.timeseries import TimeSeriesDataFrame
@@ -47,19 +46,25 @@ class TimeSeriesScorer:
         Name of an equivalent metric used by AutoGluon-Tabular with ``problem_type="regression"``. Used by forecasting
         models that train tabular regression models under the hood. This attribute should only be specified by point
         forecast metrics.
+    evaluate_only : bool, default = False
+        Whether the metric can only be used to evaluate a trained predictor but not for model selection. If True,
+        passing this metric as ``eval_metric`` to :class:`~autogluon.timeseries.TimeSeriesPredictor` raises an error.
+        This should be set for diagnostic metrics whose optimum is not achieved by minimizing or maximizing the metric
+        (e.g., signed forecast bias, where both positive and negative values indicate a worse forecast).
     """
 
     greater_is_better_internal: bool = False
     optimum: float = 0.0
     optimized_by_median: bool = False
     needs_quantile: bool = False
-    equivalent_tabular_regression_metric: Optional[str] = None
+    equivalent_tabular_regression_metric: str | None = None
+    evaluate_only: bool = False
 
     def __init__(
         self,
         prediction_length: int = 1,
-        seasonal_period: Optional[int] = None,
-        horizon_weight: Optional[Sequence[float]] = None,
+        seasonal_period: int | None = None,
+        horizon_weight: Sequence[float] | None = None,
     ):
         self.prediction_length = int(prediction_length)
         if self.prediction_length < 1:
@@ -193,21 +198,21 @@ class TimeSeriesScorer:
         return self.optimum - self.score(*args, **kwargs)
 
     @staticmethod
-    def _safemean(array: Union[np.ndarray, pd.Series]) -> float:
+    def _safemean(array: np.ndarray | pd.Series) -> float:
         """Compute mean of a numpy array-like object, ignoring inf, -inf and nan values."""
         return float(np.mean(array[np.isfinite(array)]))
 
     @staticmethod
     def _get_point_forecast_score_inputs(
         data_future: TimeSeriesDataFrame, predictions: TimeSeriesDataFrame, target: str = "target"
-    ) -> Tuple[pd.Series, pd.Series]:
+    ) -> tuple[pd.Series, pd.Series]:
         """Get inputs necessary to compute point forecast metrics.
 
         Returns
         -------
-        y_true : pd.Series, shape [num_items * prediction_length]
+        y_true
             Target time series values during the forecast horizon.
-        y_pred : pd.Series, shape [num_items * prediction_length]
+        y_pred
             Predicted time series values during the forecast horizon.
         """
         y_true = data_future[target]
@@ -217,16 +222,16 @@ class TimeSeriesScorer:
     @staticmethod
     def _get_quantile_forecast_score_inputs(
         data_future: TimeSeriesDataFrame, predictions: TimeSeriesDataFrame, target: str = "target"
-    ) -> Tuple[pd.Series, pd.DataFrame, np.ndarray]:
+    ) -> tuple[pd.Series, pd.DataFrame, np.ndarray]:
         """Get inputs necessary to compute quantile forecast metrics.
 
         Returns
         -------
-        y_true : pd.Series, shape [num_items * prediction_length]
+        y_true
             Target time series values during the forecast horizon.
-        q_pred : pd.DataFrame, shape [num_items * prediction_length, num_quantiles]
+        q_pred
             Quantile forecast for each predicted quantile level. Column order corresponds to ``quantile_levels``.
-        quantile_levels : np.ndarray, shape [num_quantiles]
+        quantile_levels
             Quantile levels for which the forecasts are generated (as floats).
         """
         quantile_columns = [col for col in predictions.columns if col != "mean"]
@@ -241,19 +246,19 @@ class TimeSeriesScorer:
     @overload
     @staticmethod
     def check_get_horizon_weight(
-        horizon_weight: Union[Sequence[float], np.ndarray], prediction_length: int
-    ) -> npt.NDArray[np.float64]: ...
+        horizon_weight: Sequence[float] | np.ndarray, prediction_length: int
+    ) -> np.ndarray: ...
 
     @staticmethod
     def check_get_horizon_weight(
-        horizon_weight: Union[Sequence[float], np.ndarray, None], prediction_length: int
-    ) -> Optional[npt.NDArray[np.float64]]:
+        horizon_weight: Sequence[float] | np.ndarray | None, prediction_length: int
+    ) -> np.ndarray | None:
         """Convert horizon_weight to a non-negative numpy array that sums up to prediction_length.
         Raises an exception if horizon_weight has an invalid shape or contains invalid values.
 
         Returns
         -------
-        horizon_weight:
+        horizon_weight
             None if the input is None, otherwise a numpy array of shape [1, prediction_length].
         """
         if horizon_weight is None:

@@ -11,13 +11,13 @@ __all__ = [
     "try_import_catboost",
     "try_import_lightgbm",
     "try_import_xgboost",
+    "try_import_interpret",
     "try_import_faiss",
     "try_import_fastai",
     "try_import_torch",
     "try_import_autogluon_multimodal",
     "try_import_rapids_cuml",
     "try_import_imodels",
-    "try_import_fasttext",
 ]
 
 logger = logging.getLogger(__name__)
@@ -31,13 +31,13 @@ def try_import_mxboard():
 
 
 def try_import_ray() -> ModuleType:
-    RAY_MAX_VERSION = "2.45.0"  # sync with core/setup.py
+    RAY_MAX_VERSION = "2.57.0"  # sync with core/setup.py
     ray_max_version_os_map = dict(
         Darwin=RAY_MAX_VERSION,
         Windows=RAY_MAX_VERSION,
         Linux=RAY_MAX_VERSION,
     )
-    ray_min_version = "2.10.0"
+    ray_min_version = "2.43.0"
     current_os = platform.system()
     ray_max_version = ray_max_version_os_map.get(current_os, RAY_MAX_VERSION)
     strict_ray_version = os.environ.get("AG_LOOSE_RAY_VERSION", "False") != "True"
@@ -118,6 +118,16 @@ def try_import_xgboost():
         )
 
 
+def try_import_interpret():
+    try:
+        import interpret
+    except ImportError:
+        raise ImportError(
+            "Unable to import dependency interpret. "
+            "A quick tip is to install via `pip install autogluon.tabular[interpret]`. "
+        )
+
+
 def try_import_faiss():
     try:
         import faiss
@@ -150,7 +160,7 @@ def try_import_torch():
         raise ImportError(
             "Unable to import dependency torch\n"
             "A quick tip is to install via `pip install torch`.\n"
-            "The minimum torch version is currently 2.2."  # sync with core/_setup_utils.py
+            "The minimum torch version is currently 2.10."  # sync with core/_setup_utils.py
         )
 
 
@@ -182,12 +192,3 @@ def try_import_imodels():
         import imodels
     except ImportError:
         raise ImportError("Unable to import dependency imodels. A quick tip is to install via `pip install imodels`. ")
-
-
-def try_import_fasttext():
-    try:
-        import fasttext
-
-        _ = fasttext.__file__
-    except Exception:
-        raise ImportError('Import fasttext failed. Please run "pip install fasttext"')

@@ -1,12 +1,58 @@
-from typing import Optional, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
 
-from autogluon.timeseries.dataset.ts_dataframe import TimeSeriesDataFrame
+from autogluon.timeseries.dataset import TimeSeriesDataFrame
 
 from .abstract import TimeSeriesScorer
 from .utils import in_sample_abs_seasonal_error
+
+
+class MQL(TimeSeriesScorer):
+    r"""Mean quantile loss.
+
+    Also known as mean pinball loss.
+
+    Defined as the quantile loss averaged over all time series, time steps in the forecast horizon, and quantile levels.
+
+    .. math::
+
+        \operatorname{MQL} = \frac{1}{N} \frac{1}{H} \sum_{i=1}^{N} \sum_{t=T+1}^{T+H} \frac{1}{|\mathcal{Q}|} \sum_{q \in \mathcal{Q}} \rho_q(y_{i,t}, f^q_{i,t})
+
+    where :math:`\mathcal{Q}` is the set of quantile levels.
+
+    Properties:
+
+    - scale-dependent (time series with large absolute value contribute more to the loss)
+    - equivalent to MAE if ``quantile_levels = [0.5]``
+
+    References
+    ----------
+    - `Forecasting: Principles and Practice <https://otexts.com/fpp3/distaccuracy.html#quantile-scores>`_
+    """
+
+    needs_quantile = True
+
+    def compute_metric(
+        self,
+        data_future: TimeSeriesDataFrame,
+        predictions: TimeSeriesDataFrame,
+        target: str = "target",
+        **kwargs,
+    ) -> float:
+        y_true, q_pred, quantile_levels = self._get_quantile_forecast_score_inputs(data_future, predictions, target)
+        y_true = y_true.to_numpy()[:, None]  # shape [N, 1]
+        q_pred = q_pred.to_numpy()  # shape [N, len(quantile_levels)]
+
+        errors = (
+            np.abs((q_pred - y_true) * ((y_true <= q_pred) - quantile_levels))
+            .mean(axis=1)
+            .reshape([-1, self.prediction_length])
+        )
+        if self.horizon_weight is not None:
+            errors *= self.horizon_weight
+        return 2 * self._safemean(errors)
 
 
 class WQL(TimeSeriesScorer):
@@ -92,13 +138,13 @@ class SQL(TimeSeriesScorer):
     def __init__(
         self,
         prediction_length: int = 1,
-        seasonal_period: Optional[int] = None,
-        horizon_weight: Optional[Sequence[float]] = None,
+        seasonal_period: int | None = None,
+        horizon_weight: Sequence[float] | None = None,
     ):
         super().__init__(
             prediction_length=prediction_length, seasonal_period=seasonal_period, horizon_weight=horizon_weight
         )
-        self._past_abs_seasonal_error: Optional[pd.Series] = None
+        self._past_abs_seasonal_error: pd.Series | None = None
 
     def save_past_metrics(
         self, data_past: TimeSeriesDataFrame, target: str = "target", seasonal_period: int = 1, **kwargs

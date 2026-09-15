@@ -3,11 +3,11 @@ from __future__ import annotations
 import os
 from typing import Any, Generic, Type, TypeVar
 
-import networkx as nx
 from typing_extensions import Self
 
-from autogluon.core.models import ModelBase 
+from autogluon.core.models import ModelBase
 from autogluon.core.utils.loaders import load_pkl
+from autogluon.core.utils.model_graph import ModelGraph
 from autogluon.core.utils.savers import save_json, save_pkl
 
 ModelTypeT = TypeVar("ModelTypeT", bound=ModelBase)
@@ -30,7 +30,7 @@ class AbstractTrainer(Generic[ModelTypeT]):
 
         #: Directed Acyclic Graph (DAG) of model interactions. Describes how certain models depend on the predictions of certain
         #: other models. Contains numerous metadata regarding each model.
-        self.model_graph = nx.DiGraph()
+        self.model_graph = ModelGraph()
         self.model_best: str | None = None
 
         #: Names which are banned but are not used by a trained model.
@@ -99,7 +99,7 @@ class AbstractTrainer(Generic[ModelTypeT]):
         """
         if not isinstance(model, str):
             model = model.name
-        minimum_model_set = list(nx.bfs_tree(self.model_graph, model, reverse=True))
+        minimum_model_set = self.model_graph.ancestors_with_self(model)
         if not include_self:
             minimum_model_set = [m for m in minimum_model_set if m != model]
         return minimum_model_set
@@ -165,11 +165,6 @@ class AbstractTrainer(Generic[ModelTypeT]):
         save_pkl.save(path=os.path.join(self.path, self.trainer_info_name), object=info)
         save_json.save(path=os.path.join(self.path, self.trainer_info_json_name), obj=info)
         return info
-
-    def construct_model_templates(
-        self, hyperparameters: dict[str, Any]
-    ) -> tuple[list[ModelTypeT], dict] | list[ModelTypeT]:
-        raise NotImplementedError
 
     def get_model_best(self) -> str:
         raise NotImplementedError

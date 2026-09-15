@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 
 
 class FocalLoss(nn.Module):
@@ -36,18 +37,34 @@ class FocalLoss(nn.Module):
         """
         super(FocalLoss, self).__init__()
 
-        self.gamma = gamma
+        self.gamma = float(gamma) if gamma is not None else 2.0
         self.reduction = reduction
-        self.eps = eps
-        if alpha is not None:
-            if isinstance(alpha, str):  # handles Ray Tune HPO sampled hyperparameter
-                try:
-                    numbers = alpha.strip("()").split(",")
-                    alpha = [float(num) for num in numbers]
-                except:
-                    raise ValueError(f"{type(alpha)} {alpha} is not in a supported format.")
-            alpha = torch.tensor(alpha)
+        self.eps = float(eps) if eps is not None else 1e-6
+
+        alpha = self._parse_alpha(alpha)
         self.nll_loss = nn.NLLLoss(weight=alpha, reduction="none")
+
+    def _parse_alpha(self, alpha) -> Optional[torch.Tensor]:
+        """Parse and convert alpha to a torch.Tensor with proper dtype."""
+        if alpha is None:
+            return None
+
+        if torch.is_tensor(alpha):
+            return alpha.float()
+
+        if isinstance(alpha, str):
+            numbers = alpha.strip("()").split(",")
+            alpha = [float(num) for num in numbers]
+
+        # Convert OmegaConf to primitive Python types
+        if OmegaConf.is_list(alpha):
+            alpha = OmegaConf.to_container(alpha)
+
+        if isinstance(alpha, (list, tuple)):
+            # Handle strings like 'np.float64(0.123)' → extract number between parentheses
+            alpha = [float(str(val).split("(")[-1].rstrip(")")) for val in alpha]
+
+        return torch.tensor(alpha, dtype=torch.float32)
 
     def forward(self, input: torch.Tensor, target: torch.Tensor):
         if not torch.is_tensor(input):
@@ -74,7 +91,6 @@ class FocalLoss(nn.Module):
 
         if self.reduction == "mean":
             loss = loss.mean()
-
         elif self.reduction == "sum":
             loss = loss.sum()
 

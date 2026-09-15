@@ -1,6 +1,11 @@
+import sys
 import tempfile
 
 import pytest
+
+if sys.platform == "win32" and sys.version_info >= (3, 13):
+    pytest.skip("No ray support on Windows with Python 3.13", allow_module_level=True)
+
 from ray import tune
 
 from autogluon.core.hpo.ray_hpo import AutommRayTuneAdapter, RayTuneAdapter, TabularRayTuneAdapter, run
@@ -36,7 +41,7 @@ def _dummy_trainable(config):
     for x in range(20):
         score = _dummy_objective(x, config["a"], config["b"])
 
-        tune.report(score=score)
+        tune.report({"score": score})
 
 
 def test_invalid_searcher():
@@ -136,3 +141,5 @@ def test_run(searcher, scheduler):
             ray_tune_adapter=DummyAdapter(),
         )
         assert analysis is not None
+        assert analysis.best_result is not None
+        assert analysis.best_result["score"] is not None

@@ -1,168 +1,25 @@
-from __future__ import annotations
-
 import logging
 import os
 import shutil
-import subprocess
-from copy import deepcopy
-from dataclasses import dataclass
-from typing import Literal
+import sys
+from typing import Union
 
 from autogluon.common.utils.try_import import try_import_ray
 
 from .cpu_utils import get_available_cpu_count
 from .distribute_utils import DistributedContext
-from .lite import disable_if_lite_mode
 from .utils import bytes_to_mega_bytes
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ResourcesUsageConfig:
-    """Dataclass to store resources usage settings."""
-
-    num_cpus: int | Literal["auto"] = "auto"
-    """ The total amount of cpus you want AutoGluon predictor to use.
-    Auto means AutoGluon will make the decision based on the total number of cpus
-    available and the model requirement for best performance.
-    """
-    num_gpus: int | Literal["auto"] = "auto"
-    """The total amount of gpus you want AutoGluon predictor to use.
-    Auto means AutoGluon will make the decision based on the total number of gpus
-    available and the model requirement for best performance.
-    """
-    memory_limit: float | str = "auto"
-    """The total amount of memory in GB you want AutoGluon predictor to use.
-
-    "auto" means AutoGluon will use all available memory on the system (that is
-    detectable). Note that this is only a soft limit! AutoGluon uses this limit to
-    skip training models that are expected to require too much memory or stop training
-    a model that would exceed the memory limit. AutoGluon does not guarantee the
-    enforcement of this limit (yet). Nevertheless, we expect AutoGluon to abide by the
-    limit in most cases or, at most, go over the limit by a small margin. For most
-    virtualized systems (e.g., in the cloud) and local usage on a server or laptop,
-    "auto" is ideal for this parameter.
-
-    We recommend manually setting the memory limit (and any other resources) on
-    systems with shared resources that are controlled by the operating system
-    (e.g., SLURM and cgroups). Otherwise, AutoGluon might wrongly assume more resources
-    are available for fitting a model than the operating system allows, which can
-    result in model training failing or being very inefficient.
-    """
-    usage_strategy: Literal["sequential", "parallel"] = "sequential"
-    """The strategy used to schedule jobs on resources.
-        * If "sequential", models will be fit sequentially. This is the most stable
-        option with the most readable logging.
-        * If "parallel", models will be fit in parallel with ray, splitting available
-        compute between them. For machines with 16 or more CPU cores, it is likely that
-        "parallel" will be faster than "sequential".
-        Note: "parallel" is experimental and may run into issues.
-    """
-
-    @staticmethod
-    def from_user_input(resource_config: dict | ResourcesUsageConfig | None):
-        """Create a ResourcesUsageConfig instance from user input."""
-        if resource_config is None:
-            return ResourcesUsageConfig()
-        if isinstance(resource_config, dict):
-            return ResourcesUsageConfig(**resource_config)
-        if isinstance(resource_config, ResourcesUsageConfig):
-            return deepcopy(resource_config)
-
-        raise ValueError(
-            "`resource_config` must be a dict or ResourcesUsageConfig instance. "
-            f"Got: {format(type(resource_config))} with value {resource_config}."
-        )
-
-    def __post_init__(self):
-        """Validate the resources usage config after initialization."""
-        self.validate_resources_usage_config(
-            num_cpus=self.num_cpus,
-            num_gpus=self.num_gpus,
-            memory_limit=self.memory_limit,
-            usage_strategy=self.usage_strategy,
-        )
-
-    @staticmethod
-    def validate_resources_usage_config(
-        *,
-        num_cpus: int | str | None = None,
-        num_gpus: int | float | str | None = None,
-        memory_limit: float | str | None = None,
-        usage_strategy: str | None = None,
-    ):
-        """Validate the resources usage config."""
-        if num_cpus is not None:
-            ResourcesUsageConfig.validate_num_cpus(num_cpus=num_cpus)
-        if num_gpus is not None:
-            ResourcesUsageConfig.validate_num_gpus(num_gpus=num_gpus)
-        if memory_limit is not None:
-            ResourcesUsageConfig.validate_and_set_memory_limit(memory_limit=memory_limit)
-        if usage_strategy is not None:
-            ResourcesUsageConfig.validate_usage_strategy(usage_strategy=usage_strategy)
-
-    @staticmethod
-    def validate_num_cpus(num_cpus: int | str):
-        """Validate the `num_cpus` parameter."""
-        if num_cpus is None:
-            raise ValueError(f"`num_cpus` must be an int or 'auto'. Value: {num_cpus}")
-        if isinstance(num_cpus, str):
-            if num_cpus != "auto":
-                raise ValueError(f"`num_cpus` must be an int or 'auto'. Value: {num_cpus}")
-        elif not isinstance(num_cpus, int):
-            raise TypeError(f"`num_cpus` must be an int or 'auto'. Found: {type(num_cpus)} | Value: {num_cpus}")
-        elif num_cpus < 1:
-            raise ValueError(f"`num_cpus` must be greater than or equal to 1. (num_cpus={num_cpus})")
-
-    @staticmethod
-    def validate_num_gpus(num_gpus: int | float | str):
-        """Validate the `num_gpus` parameter."""
-        if num_gpus is None:
-            raise ValueError(f"`num_gpus` must be an int, float, or 'auto'. Value: {num_gpus}")
-        if isinstance(num_gpus, str):
-            if num_gpus != "auto":
-                raise ValueError(f"`num_gpus` must be an int, float, or 'auto'. Value: {num_gpus}")
-        elif not isinstance(num_gpus, (int, float)):
-            raise TypeError(
-                f"`num_gpus` must be an int, float, or 'auto'. Found: {type(num_gpus)} | Value: {num_gpus}"
-            )
-        elif num_gpus < 0:
-            raise ValueError(f"`num_gpus` must be greater than or equal to 0. (num_gpus={num_gpus})")
-
-    @staticmethod
-    def validate_and_set_memory_limit(memory_limit: float | str):
-        """Validate and set the `memory_limit` parameter."""
-        if memory_limit is None:
-            raise ValueError(f"`memory_limit` must be an int, float, or 'auto'. Value: {memory_limit}")
-        if isinstance(memory_limit, str):
-            if memory_limit != "auto":
-                raise ValueError(f"`memory_limit` must be an int, float, or 'auto'. Value: {memory_limit}")
-        elif not isinstance(memory_limit, (int, float)):
-            raise TypeError(
-                f"`memory_limit` must be an int, float, or 'auto'. Found: {type(memory_limit)} | Value: {memory_limit}"
-            )
-        elif memory_limit <= 0:
-            raise ValueError(f"`memory_limit` must be greater than 0. (memory_limit={memory_limit})")
-
-        if memory_limit != "auto":
-            logger.log(20, f"Enforcing custom memory (soft)limit of {memory_limit} GB!")
-            os.environ["AG_MEMORY_LIMIT_IN_GB"] = str(memory_limit)
-
-    @staticmethod
-    def validate_usage_strategy(usage_strategy: str):
-        """Validate the `usage_strategy` parameter."""
-        valid_values = ["sequential", "parallel"]
-        if usage_strategy not in valid_values:
-            raise ValueError(f"usage_strategy must be one of {valid_values}. Value: {usage_strategy}")
-
-
 class ResourceManager:
-    """Manager that fetches system related info."""
+    """Manager that fetches system related info"""
 
     @staticmethod
     def get_cpu_count(only_physical_cores: bool = False) -> int:
-        """Get the number of available CPU cores.
+        """
+        Get the number of available CPU cores.
 
         Parameters
         ----------
@@ -171,7 +28,7 @@ class ResourceManager:
             This can be beneficial for CPU-intensive tasks like time series forecasting
             where physical cores often provide better performance than logical cores.
 
-        Returns:
+        Returns
         -------
         int
             The number of available CPU cores.
@@ -179,23 +36,20 @@ class ResourceManager:
         return get_available_cpu_count(only_physical_cores=only_physical_cores)
 
     @staticmethod
-    @disable_if_lite_mode(ret=1)
     def get_cpu_count_psutil(logical=True):
         import psutil
 
         return psutil.cpu_count(logical=logical)
 
     @staticmethod
-    @disable_if_lite_mode(ret=0)
     def get_gpu_count() -> int:
-        num_gpus = ResourceManager._get_gpu_count_cuda()
-        if num_gpus == 0:
-            num_gpus = ResourceManager.get_gpu_count_torch()
-        return num_gpus
+        """The GPUs this process can use: `get_gpu_count_torch`, so every consumer sees one count."""
+        return ResourceManager.get_gpu_count_torch()
 
     @staticmethod
     def get_gpu_count_torch(cuda_only: bool = False) -> int:
-        """Get the number of available GPUs.
+        """
+        Get the number of available GPUs
 
         Parameters
         ----------
@@ -203,11 +57,21 @@ class ResourceManager:
             If True, only check for CUDA GPUs and ignore other supported accelerators.
             This is useful for models that only support CUDA and not other accelerators.
 
-        Returns:
+        Returns
         -------
         int
             Number of available GPUs. When cuda_only=True, returns the actual CUDA device count.
+
+        The count is what torch reports. While torch is not imported yet it is computed from
+        NVML and `CUDA_VISIBLE_DEVICES` instead (see `gpu_count`), so a fit without GPU models
+        does not pay for importing torch.
         """
+        if "torch" not in sys.modules:
+            from .gpu_count import gpu_count_without_torch
+
+            num_gpus = gpu_count_without_torch(cuda_only=cuda_only)
+            if num_gpus is not None:
+                return num_gpus
         try:
             import torch
 
@@ -220,40 +84,73 @@ class ResourceManager:
             else:
                 num_gpus = 0
         except Exception:
-            logger.log(
-                40,
-                "\tFailed to import torch or check CUDA availability!"
-                "Please ensure you have the correct version of PyTorch installed by running `pip install -U torch`",
-            )
+            # An install without torch has no GPU it could use; that is an answer, not an error.
+            logger.log(10, "\tCould not import torch to count GPUs; assuming none are available.")
             num_gpus = 0
         return num_gpus
 
     @staticmethod
-    def get_gpu_free_memory():
-        """Grep gpu free memory from nvidia-smi tool.
-        This function can fail due to many reasons(driver, nvidia-smi tool, envs, etc) so please simply use
-        it as a suggestion, stay away with any rules bound to it.
-        E.g. for a 4-gpu machine, the result can be list of int
-        >>> print(get_gpu_free_memory)
-        >>> [13861, 13859, 13859, 13863].
-        """
-        _output_to_list = lambda x: x.decode("ascii").split("\n")[:-1]
+    def get_available_vram(device: int = 0) -> float | None:
+        """Available GPU memory (VRAM) of `device` in bytes, or None when it cannot be determined.
 
+        The GPU counterpart of `get_available_virtual_mem`. Three effects make this more
+        than a `torch.cuda.mem_get_info` call:
+
+        1. `mem_get_info` reports memory free on the *device*, which excludes memory
+           PyTorch's caching allocator already holds. That memory is reusable by this
+           process without a new device allocation, so it is added back
+           (`memory_reserved - memory_allocated`); ignoring it under-reports what a fit
+           can actually use and needlessly skips models.
+        2. `torch.cuda.set_per_process_memory_fraction` caps this process below the
+           device total. The cap is not visible to `mem_get_info`, so it is applied here —
+           a process allocating past its fraction OOMs even with the device free.
+        3. Without torch/CUDA, NVML gives device-level free memory only (no allocator or
+           fraction information available).
+        """
         try:
-            COMMAND = "nvidia-smi --query-gpu=memory.free --format=csv"
-            memory_free_info = _output_to_list(subprocess.check_output(COMMAND.split()))[1:]
-            memory_free_values = [int(x.split()[0]) for i, x in enumerate(memory_free_info)]
-        except:
-            memory_free_values = []
-        return memory_free_values
+            import torch
+
+            if torch.cuda.is_available() and device < torch.cuda.device_count():
+                device_free, device_total = torch.cuda.mem_get_info(device)
+                cached_unused = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+                available = float(device_free + cached_unused)
+
+                # Respect a per-process cap when one is set (used to partition a GPU
+                # across processes). The getter exists from torch 2.9; older versions
+                # expose no way to read it back, so the cap is simply not applied.
+                get_fraction = getattr(torch.cuda, "get_per_process_memory_fraction", None)
+                if get_fraction is not None:
+                    fraction = float(get_fraction(device))
+                    if fraction < 1.0:
+                        process_headroom = fraction * device_total - torch.cuda.memory_allocated(device)
+                        available = min(available, max(process_headroom, 0.0))
+                return min(available, float(device_total))
+        except Exception:
+            pass
+        memory_free_values = ResourceManager.get_gpu_free_memory()  # MiB per device
+        if device < len(memory_free_values):
+            return float(memory_free_values[device]) * 1024**2
+        return None
+
+    @staticmethod
+    def get_gpu_free_memory():
+        """Free memory in MiB of each GPU this process can see, in visible-device order; `[]` when NVML cannot tell."""
+        from .gpu_count import visible_device_memory
+
+        memory = visible_device_memory()
+        if memory is None:
+            return []
+        return [int(free // (1024**2)) for total, free, used in memory]
 
     @staticmethod
     def get_memory_size(format: str = "B") -> float:
-        """Parameters
+        """
+
+        Parameters
         ----------
         format: {"B", "KB", "MB", "GB", "TB", "PB"}
 
-        Returns:
+        Returns
         -------
         Memory size in the provided `format`.
 
@@ -273,7 +170,8 @@ class ResourceManager:
 
     @staticmethod
     def bytes_converter(value: float, format_in: str, format_out: str) -> float:
-        """Converts bytes `value` from `format_in` to `format_out`.
+        """
+        Converts bytes `value` from `format_in` to `format_out`.
 
         Parameters
         ----------
@@ -281,7 +179,7 @@ class ResourceManager:
         format_in: {"B", "KB", "MB", "GB", "TB", "PB"}
         format_out: {"B", "KB", "MB", "GB", "TB", "PB"}
 
-        Returns:
+        Returns
         -------
         value in `format_out` format.
         """
@@ -301,7 +199,6 @@ class ResourceManager:
         return output
 
     @staticmethod
-    @disable_if_lite_mode(ret=None)
     def get_process(pid=None):
         import psutil
 
@@ -321,23 +218,12 @@ class ResourceManager:
 
     @staticmethod
     def get_disk_usage(path: str):
-        """Gets the disk usage information for the given path.
+        """
+        Gets the disk usage information for the given path
 
         Returns obj with variables `free`, `total`, `used`, representing bytes as integers.
         """
         return shutil.disk_usage(path=path)
-
-    @staticmethod
-    def _get_gpu_count_cuda():
-        # FIXME: Sometimes doesn't detect GPU on Windows
-        # FIXME: Doesn't ensure the GPUs are actually usable by the model (PyTorch, etc.)
-        from .nvutil import cudaDeviceGetCount, cudaInit, cudaShutdown
-
-        if not cudaInit():
-            return 0
-        gpu_count = cudaDeviceGetCount()
-        cudaShutdown()
-        return gpu_count
 
     @staticmethod
     def _get_custom_memory_size():
@@ -350,7 +236,6 @@ class ResourceManager:
         return max(int(memory_limit * (1024.0**3)), 1)
 
     @staticmethod
-    @disable_if_lite_mode(ret=1073741824)  # set to 1GB as an empirical value in lite/web-browser mode.
     def _get_memory_size() -> float:
         if os.environ.get("AG_MEMORY_LIMIT_IN_GB", None) is not None:
             return ResourceManager._get_custom_memory_size()
@@ -360,12 +245,10 @@ class ResourceManager:
         return psutil.virtual_memory().total
 
     @staticmethod
-    @disable_if_lite_mode(ret=1073741824)  # set to 1GB as an empirical value in lite/web-browser mode.
     def _get_memory_rss() -> float:
         return ResourceManager.get_process().memory_info().rss
 
     @staticmethod
-    @disable_if_lite_mode(ret=1073741824)  # set to 1GB as an empirical value in lite/web-browser mode.
     def _get_available_virtual_mem() -> float:
         import psutil
 
@@ -382,7 +265,7 @@ class RayResourceManager:
 
     @staticmethod
     def _init_ray():
-        """Initialize ray runtime if not already initialized. Will force the existence of a cluster already being spinned up."""
+        """Initialize ray runtime if not already initialized. Will force the existence of a cluster already being spinned up"""
         try_import_ray()
         import ray
 
@@ -394,8 +277,9 @@ class RayResourceManager:
             )
 
     @staticmethod
-    def _get_cluster_resources(key: str, default_val: int | float = 0):
-        """Get value of resources available in the cluster.
+    def _get_cluster_resources(key: str, default_val: Union[int, float] = 0):
+        """
+        Get value of resources available in the cluster.
 
         Parameter
         ---------
@@ -412,12 +296,12 @@ class RayResourceManager:
 
     @staticmethod
     def get_cpu_count() -> int:
-        """Get number of cpu cores (virtual) available in the cluster."""
+        """Get number of cpu cores (virtual) available in the cluster"""
         return int(RayResourceManager._get_cluster_resources("CPU"))
 
     @staticmethod
     def get_gpu_count() -> int:
-        """Get number of gpus available in the cluster."""
+        """Get number of gpus available in the cluster"""
         return int(RayResourceManager._get_cluster_resources("GPU"))
 
     @staticmethod
@@ -427,5 +311,5 @@ class RayResourceManager:
 
 
 def get_resource_manager():
-    """Get resource manager class based on the training context."""
+    """Get resource manager class based on the training context"""
     return RayResourceManager if DistributedContext.is_distributed_mode() else ResourceManager

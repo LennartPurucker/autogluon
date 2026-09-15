@@ -1,12 +1,11 @@
-from __future__ import annotations
-
 import copy
 import logging
 import os
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from pathlib import Path
+from typing import Any, Sequence
 
 import pandas as pd
 from typing_extensions import Self
@@ -21,6 +20,7 @@ from autogluon.core.models import ModelBase
 from autogluon.core.utils.exceptions import TimeLimitExceeded
 from autogluon.timeseries.dataset import TimeSeriesDataFrame
 from autogluon.timeseries.metrics import TimeSeriesScorer, check_get_evaluation_metric
+from autogluon.timeseries.models.registry import ModelRegistry
 from autogluon.timeseries.regressor import CovariateRegressor, get_covariate_regressor
 from autogluon.timeseries.transforms import CovariateScaler, TargetScaler, get_covariate_scaler, get_target_scaler
 from autogluon.timeseries.utils.features import CovariateMetadata
@@ -37,27 +37,27 @@ class TimeSeriesModelBase(ModelBase, ABC):
 
     Parameters
     ----------
-    path : str, default = None
+    path
         Directory location to store all outputs.
         If None, a new unique time-stamped directory is chosen.
-    freq: str
+    freq
         Frequency string (cf. gluonts frequency strings) describing the frequency
         of the time series data. For example, "h" for hourly or "D" for daily data.
-    prediction_length: int
+    prediction_length
         Length of the prediction horizon, i.e., the number of time steps the model
         is fit to forecast.
-    name : str, default = None
+    name
         Name of the subdirectory inside path where model will be saved.
         The final model directory will be os.path.join(path, name)
         If None, defaults to the model's class name: self.__class__.__name__
-    covariate_metadata: CovariateMetadata
+    covariate_metadata
         A mapping of different covariate types known to autogluon.timeseries to column names
         in the data set.
-    eval_metric : Union[str, TimeSeriesScorer], default = "WQL"
+    eval_metric
         Metric by which predictions will be ultimately evaluated on future test data. This only impacts
         ``model.score()``, as eval_metric is not used during training. Available metrics can be found in
         ``autogluon.timeseries.metrics``.
-    hyperparameters : dict, default = None
+    hyperparameters
         Hyperparameters that will be used by the model (can be search spaces instead of fixed values).
         If None, model defaults are used. This is identical to passing an empty dictionary.
     """
@@ -73,18 +73,20 @@ class TimeSeriesModelBase(ModelBase, ABC):
     _supports_known_covariates: bool = False
     _supports_past_covariates: bool = False
     _supports_static_features: bool = False
+    # Whether the model implements `export_model`. Meta-models that delegate to a base model keep this False.
+    _supports_export: bool = False
 
     def __init__(
         self,
-        path: Optional[str] = None,
-        name: Optional[str] = None,
-        hyperparameters: Optional[Dict[str, Any]] = None,
-        freq: Optional[str] = None,
+        path: str | None = None,
+        name: str | None = None,
+        hyperparameters: dict[str, Any] | None = None,
+        freq: str | None = None,
         prediction_length: int = 1,
-        covariate_metadata: Optional[CovariateMetadata] = None,
+        covariate_metadata: CovariateMetadata | None = None,
         target: str = "target",
         quantile_levels: Sequence[float] = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
-        eval_metric: Union[str, TimeSeriesScorer, None] = None,
+        eval_metric: str | TimeSeriesScorer | None = None,
     ):
         self.name = name or re.sub(r"Model$", "", self.__class__.__name__)
 
@@ -103,7 +105,7 @@ class TimeSeriesModelBase(ModelBase, ABC):
         self.target: str = target
         self.covariate_metadata = covariate_metadata or CovariateMetadata()
 
-        self.freq: Optional[str] = freq
+        self.freq: str | None = freq
         self.prediction_length: int = prediction_length
         self.quantile_levels: list[float] = list(quantile_levels)
 
@@ -118,17 +120,21 @@ class TimeSeriesModelBase(ModelBase, ABC):
         else:
             self.must_drop_median = False
 
-        self._oof_predictions: Optional[List[TimeSeriesDataFrame]] = None
+        self._oof_predictions: list[TimeSeriesDataFrame] | None = None
 
         # user provided hyperparameters and extra arguments that are used during model training
         self._hyperparameters, self._extra_ag_args = self._check_and_split_hyperparameters(hyperparameters)
 
-        self.fit_time: Optional[float] = None  # Time taken to fit in seconds (Training data)
-        self.predict_time: Optional[float] = None  # Time taken to predict in seconds (Validation data)
-        self.predict_1_time: Optional[float] = (
-            None  # Time taken to predict 1 row of data in seconds (with batch size `predict_1_batch_size`)
-        )
-        self.val_score: Optional[float] = None  # Score with eval_metric (Validation data)
+        # Time taken to fit in seconds (Training data)
+        self.fit_time: float | None = None
+        # Time taken to predict in seconds, for a single prediction horizon on validation data
+        self.predict_time: float | None = None
+        # Time taken to predict 1 row of data in seconds (with batch size `predict_1_batch_size`)
+        self.predict_1_time: float | None = None
+        # Useful for ensembles, additional prediction time excluding base models. None for base models.
+        self.predict_time_marginal: float | None = None
+        # Score with eval_metric on validation data
+        self.val_score: float | None = None
 
     def __repr__(self) -> str:
         return self.name
@@ -144,24 +150,28 @@ class TimeSeriesModelBase(ModelBase, ABC):
         self.path = path_context
         self.path_root = self.path.rsplit(self.name, 1)[0]
 
+    def cache_oof_predictions(self, predictions: TimeSeriesDataFrame | list[TimeSeriesDataFrame]) -> None:
+        if isinstance(predictions, TimeSeriesDataFrame):
+            predictions = [predictions]
+        self._oof_predictions = predictions
+
     @classmethod
     def _check_and_split_hyperparameters(
-        cls, hyperparameters: Optional[Dict[str, Any]] = None
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """
-        Given the user-specified hyperparameters, split into `hyperparameters` and `extra_ag_args`, intended
+        cls, hyperparameters: dict[str, Any] | None = None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Given the user-specified hyperparameters, split into `hyperparameters` and `extra_ag_args`, intended
         to be used during model initialization.
 
         Parameters
         ----------
-        hyperparameters : Optional[Dict[str, Any]], default = None
+        hyperparameters
             The model hyperparameters dictionary provided to the model constructor.
 
         Returns
         -------
-        hyperparameters: Dict[str, Any]
+        hyperparameters
             Native model hyperparameters that are passed into the "inner model" AutoGluon wraps
-        extra_ag_args: Dict[str, Any]
+        extra_ag_args
             Special auxiliary parameters that modify the model training process used by AutoGluon
         """
         hyperparameters = copy.deepcopy(hyperparameters) if hyperparameters is not None else dict()
@@ -182,7 +192,7 @@ class TimeSeriesModelBase(ModelBase, ABC):
             )
         return hyperparameters, extra_ag_args
 
-    def save(self, path: Optional[str] = None, verbose: bool = True) -> str:
+    def save(self, path: str | None = None, verbose: bool = True) -> str:
         if path is None:
             path = self.path
 
@@ -213,7 +223,7 @@ class TimeSeriesModelBase(ModelBase, ABC):
         return model
 
     @classmethod
-    def load_oof_predictions(cls, path: str, verbose: bool = True) -> List[TimeSeriesDataFrame]:
+    def load_oof_predictions(cls, path: str, verbose: bool = True) -> list[TimeSeriesDataFrame]:
         """Load the cached OOF predictions from disk."""
         return load_pkl.load(path=os.path.join(path, "utils", cls._oof_filename), verbose=verbose)
 
@@ -227,6 +237,11 @@ class TimeSeriesModelBase(ModelBase, ABC):
     @property
     def supports_past_covariates(self) -> bool:
         return self.__class__._supports_past_covariates
+
+    @property
+    def supports_export(self) -> bool:
+        """Whether this model can be exported with `export_model`."""
+        return self.__class__._supports_export
 
     @property
     def supports_static_features(self) -> bool:
@@ -244,8 +259,12 @@ class TimeSeriesModelBase(ModelBase, ABC):
         return {}
 
     def get_hyperparameters(self) -> dict:
-        """Get hyperparameters that will be passed to the "inner model" that AutoGluon wraps."""
+        """Get dictionary of hyperparameters that will be passed to the "inner model" that AutoGluon wraps."""
         return {**self._get_default_hyperparameters(), **self._hyperparameters}
+
+    def get_hyperparameter(self, key: str) -> Any:
+        """Get a single hyperparameter value for the "inner model"."""
+        return self.get_hyperparameters()[key]
 
     def get_info(self) -> dict:
         """
@@ -283,7 +302,7 @@ class TimeSeriesModelBase(ModelBase, ABC):
         return False
 
     @staticmethod
-    def _get_system_resources() -> Dict[str, Any]:
+    def _get_system_resources() -> dict[str, Any]:
         resource_manager = get_resource_manager()
         system_num_cpus = resource_manager.get_cpu_count()
         system_num_gpus = resource_manager.get_gpu_count()
@@ -295,6 +314,15 @@ class TimeSeriesModelBase(ModelBase, ABC):
     def _get_model_base(self) -> Self:
         return self
 
+    def export_model(self, path: str | Path) -> str:
+        """Export this model in a format that can be loaded by the upstream library that implements it,
+        without any AutoGluon dependency.
+
+        Only implemented by models that wrap a pretrained model with a well-defined checkpoint format. See
+        `TimeSeriesPredictor.export_model` for details.
+        """
+        raise NotImplementedError(f"{type(self).__name__.removesuffix('Model')} does not support export_model.")
+
     def persist(self) -> Self:
         """Ask the model to persist its assets in memory, i.e., to predict with low latency. In practice
         this is used for pretrained models that have to lazy-load model parameters to device memory at
@@ -305,7 +333,8 @@ class TimeSeriesModelBase(ModelBase, ABC):
     def _more_tags(self) -> dict:
         """Encode model properties using tags, similar to sklearn & autogluon.tabular.
 
-        For more details, see `autogluon.core.models.abstract.AbstractModel._get_tags()` and https://scikit-learn.org/stable/_sources/developers/develop.rst.txt.
+        For more details, see `autogluon.core.models.abstract.AbstractModel._get_tags()` and
+        https://scikit-learn.org/stable/_sources/developers/develop.rst.txt.
 
         List of currently supported tags:
         - allow_nan: Can the model handle data with missing values represented by np.nan?
@@ -376,22 +405,24 @@ class TimeSeriesModelBase(ModelBase, ABC):
         return template
 
 
-class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
+class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, metaclass=ModelRegistry):
     """Abstract base class for all time series models that take historical data as input and
     make predictions for the forecast horizon.
     """
 
+    ag_priority: int = 0
+
     def __init__(
         self,
-        path: Optional[str] = None,
-        name: Optional[str] = None,
-        hyperparameters: Optional[Dict[str, Any]] = None,
-        freq: Optional[str] = None,
+        path: str | None = None,
+        name: str | None = None,
+        hyperparameters: dict[str, Any] | None = None,
+        freq: str | None = None,
         prediction_length: int = 1,
-        covariate_metadata: Optional[CovariateMetadata] = None,
+        covariate_metadata: CovariateMetadata | None = None,
         target: str = "target",
         quantile_levels: Sequence[float] = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
-        eval_metric: Union[str, TimeSeriesScorer, None] = None,
+        eval_metric: str | TimeSeriesScorer | None = None,
     ):
         # TODO: make freq a required argument in AbstractTimeSeriesModel
         super().__init__(
@@ -405,9 +436,9 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
             quantile_levels=quantile_levels,
             eval_metric=eval_metric,
         )
-        self.target_scaler: Optional[TargetScaler]
-        self.covariate_scaler: Optional[CovariateScaler]
-        self.covariate_regressor: Optional[CovariateRegressor]
+        self.target_scaler: TargetScaler | None
+        self.covariate_scaler: CovariateScaler | None
+        self.covariate_regressor: CovariateRegressor | None
 
     def _initialize_transforms_and_regressor(self) -> None:
         self.target_scaler = get_target_scaler(self.get_hyperparameters().get("target_scaler"), target=self.target)
@@ -425,15 +456,49 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
         )
 
     @property
-    def allowed_hyperparameters(self) -> List[str]:
+    def allowed_hyperparameters(self) -> list[str]:
         """List of hyperparameters allowed by the model."""
-        return ["target_scaler", "covariate_regressor"]
+        return ["target_scaler", "covariate_regressor", "covariate_scaler"]
+
+    @property
+    def supports_export(self) -> bool:
+        """Whether this model can be exported with `export_model`.
+
+        A model can only be exported if its type implements `export_model` and it does not use any
+        AutoGluon-side data transforms, which are not included in the exported artifact.
+        """
+        return self.__class__._supports_export and not self._get_transforms_blocking_export()
+
+    def _get_transforms_blocking_export(self) -> list[str]:
+        """Names of the AutoGluon-side data transforms that prevent this model from being exported.
+
+        The exported artifact only contains the wrapped pretrained model. Any target scaler, covariate scaler or
+        covariate regressor is applied by AutoGluon around that model, so an export would silently produce
+        different forecasts than `predictor.predict()`.
+        """
+        return [
+            name
+            for name in ["target_scaler", "covariate_scaler", "covariate_regressor"]
+            if getattr(self, name, None) is not None
+        ]
+
+    def _assert_no_transforms_for_export(self) -> None:
+        """Raise if the model relies on AutoGluon-side data transforms that cannot be exported."""
+        transforms = self._get_transforms_blocking_export()
+        if transforms:
+            raise ValueError(
+                f"{type(self).__name__.removesuffix('Model')} cannot be exported because it uses the following "
+                f"AutoGluon-side data transforms: {', '.join(transforms)}. These transforms are applied outside of "
+                f"the exported model, so the exported model would produce different forecasts than "
+                f"`predictor.predict()`. To export this model, train it without "
+                f"{' / '.join(repr(name) for name in transforms)} in its hyperparameters."
+            )
 
     def fit(
         self,
         train_data: TimeSeriesDataFrame,
-        val_data: Optional[TimeSeriesDataFrame] = None,
-        time_limit: Optional[float] = None,
+        val_data: TimeSeriesDataFrame | None = None,
+        time_limit: float | None = None,
         verbosity: int = 2,
         **kwargs,
     ) -> Self:
@@ -442,32 +507,32 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
         Models should not override the `fit` method, but instead override the `_fit` method which
         has the same arguments.
 
-        Other Parameters
-        ----------------
-        train_data : TimeSeriesDataFrame
+        Parameters
+        ----------
+        train_data
             The training data provided in the library's `autogluon.timeseries.dataset.TimeSeriesDataFrame`
             format.
-        val_data : TimeSeriesDataFrame, optional
+        val_data
             The validation data set in the same format as training data.
-        time_limit : float, default = None
+        time_limit
             Time limit in seconds to adhere to when fitting model.
             Ideally, model should early stop during fit to avoid going over the time limit if specified.
-        num_cpus : int, default = 'auto'
+        num_cpus
             How many CPUs to use during fit.
             This is counted in virtual cores, not in physical cores.
             If 'auto', model decides.
-        num_gpus : int, default = 'auto'
+        num_gpus
             How many GPUs to use during fit.
             If 'auto', model decides.
-        verbosity : int, default = 2
+        verbosity
             Verbosity levels range from 0 to 4 and control how much information is printed.
             Higher levels correspond to more detailed print statements (you can set verbosity = 0 to suppress warnings).
-        **kwargs :
+        **kwargs
             Any additional fit arguments a model supports.
 
         Returns
         -------
-        model: AbstractTimeSeriesModel
+        model
             The fitted model object
         """
         start_time = time.monotonic()
@@ -526,10 +591,10 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
     def _fit(
         self,
         train_data: TimeSeriesDataFrame,
-        val_data: Optional[TimeSeriesDataFrame] = None,
-        time_limit: Optional[float] = None,
-        num_cpus: Optional[int] = None,
-        num_gpus: Optional[int] = None,
+        val_data: TimeSeriesDataFrame | None = None,
+        time_limit: float | None = None,
+        num_cpus: int | None = None,
+        num_gpus: int | None = None,
         verbosity: int = 2,
         **kwargs,
     ) -> None:
@@ -566,7 +631,7 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
     def predict(
         self,
         data: TimeSeriesDataFrame,
-        known_covariates: Optional[TimeSeriesDataFrame] = None,
+        known_covariates: TimeSeriesDataFrame | None = None,
         **kwargs,
     ) -> TimeSeriesDataFrame:
         """Given a dataset, predict the next `self.prediction_length` time steps.
@@ -578,15 +643,15 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
 
         Parameters
         ----------
-        data: Union[TimeSeriesDataFrame, Dict[str, Optional[TimeSeriesDataFrame]]]
+        data
             The dataset where each time series is the "context" for predictions. For ensemble models that depend on
             the predictions of other models, this method may accept a dictionary of previous models' predictions.
-        known_covariates : Optional[TimeSeriesDataFrame]
+        known_covariates
             A TimeSeriesDataFrame containing the values of the known covariates during the forecast horizon.
 
         Returns
         -------
-        predictions: TimeSeriesDataFrame
+        predictions
             pandas dataframes with a timestamp index, where each input item from the input
             data is given as a separate forecast item in the dictionary, keyed by the `item_id`s
             of input items.
@@ -608,11 +673,13 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
         predictions = self._predict(data=data, known_covariates=known_covariates, **kwargs)
         self.covariate_regressor = covariate_regressor
 
-        column_order = pd.Index(["mean"] + [str(q) for q in self.quantile_levels])
+        # Ensure that 'mean' is the leading column. Trailing columns might not match quantile_levels if self is
+        # a MultiWindowBacktestingModel and base_model.must_drop_median=True
+        column_order = pd.Index(["mean"] + [col for col in predictions.columns if col != "mean"])
         if not predictions.columns.equals(column_order):
             predictions = predictions.reindex(columns=column_order)
 
-        # "0.5" might be missing from the quantiles if self is a wrapper (MultiWindowBacktestingModel or ensemble)
+        # "0.5" might be missing from the quantiles if self is a MultiWindowBacktestingModel
         if "0.5" in predictions.columns:
             if self.eval_metric.optimized_by_median:
                 predictions["mean"] = predictions["0.5"]
@@ -645,14 +712,13 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
     def _predict(
         self,
         data: TimeSeriesDataFrame,
-        known_covariates: Optional[TimeSeriesDataFrame] = None,
+        known_covariates: TimeSeriesDataFrame | None = None,
         **kwargs,
     ) -> TimeSeriesDataFrame:
         """Private method for `predict`. See `predict` for documentation of arguments."""
         pass
 
     def _preprocess_time_limit(self, time_limit: float) -> float:
-        original_time_limit = time_limit
         max_time_limit_ratio = self._extra_ag_args.get("max_time_limit_ratio", self.default_max_time_limit_ratio)
         max_time_limit = self._extra_ag_args.get("max_time_limit")
 
@@ -660,16 +726,6 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
 
         if max_time_limit is not None:
             time_limit = min(time_limit, max_time_limit)
-
-        if original_time_limit != time_limit:
-            time_limit_og_str = f"{original_time_limit:.2f}s" if original_time_limit is not None else "None"
-            time_limit_str = f"{time_limit:.2f}s" if time_limit is not None else "None"
-            logger.debug(
-                f"\tTime limit adjusted due to model hyperparameters: "
-                f"{time_limit_og_str} -> {time_limit_str} "
-                f"(ag.max_time_limit={max_time_limit}, "
-                f"ag.max_time_limit_ratio={max_time_limit_ratio}"
-            )
 
         return time_limit
 
@@ -700,12 +756,12 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
 
         Parameters
         ----------
-        data: TimeSeriesDataFrame
+        data
             Dataset used for scoring.
 
         Returns
         -------
-        score: float
+        score
             The computed forecast evaluation score on the last `self.prediction_length`
             time steps of each time series.
         """
@@ -728,7 +784,7 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
         )
         predict_start_time = time.time()
         oof_predictions = self.predict(past_data, known_covariates=known_covariates, **predict_kwargs)
-        self._oof_predictions = [oof_predictions]
+        self.cache_oof_predictions(oof_predictions)
         if store_predict_time:
             self.predict_time = time.time() - predict_start_time
         if store_val_score:
@@ -737,9 +793,9 @@ class AbstractTimeSeriesModel(TimeSeriesModelBase, TimeSeriesTunable, ABC):
     def preprocess(
         self,
         data: TimeSeriesDataFrame,
-        known_covariates: Optional[TimeSeriesDataFrame] = None,
+        known_covariates: TimeSeriesDataFrame | None = None,
         is_train: bool = False,
         **kwargs,
-    ) -> Tuple[TimeSeriesDataFrame, Optional[TimeSeriesDataFrame]]:
+    ) -> tuple[TimeSeriesDataFrame, TimeSeriesDataFrame | None]:
         """Method that implements model-specific preprocessing logic."""
         return data, known_covariates

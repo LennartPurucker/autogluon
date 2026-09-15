@@ -3,7 +3,7 @@ import os
 import shutil
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type, Union, cast, overload
+from typing import TYPE_CHECKING, Any, Callable, Type, cast, overload
 
 import gluonts
 import gluonts.core.settings
@@ -21,7 +21,7 @@ from autogluon.core.hpo.constants import RAY_BACKEND
 from autogluon.tabular.models.tabular_nn.utils.categorical_encoders import (
     OneHotMergeRaresHandleUnknownEncoder as OneHotEncoder,
 )
-from autogluon.timeseries.dataset.ts_dataframe import ITEMID, TimeSeriesDataFrame
+from autogluon.timeseries.dataset import TimeSeriesDataFrame
 from autogluon.timeseries.models.abstract import AbstractTimeSeriesModel
 from autogluon.timeseries.utils.warning_filters import disable_root_logger, warning_filter
 
@@ -42,20 +42,20 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
 
     Parameters
     ----------
-    path: str
+    path
         directory to store model artifacts.
-    freq: str
+    freq
         string representation (compatible with GluonTS frequency strings) for the data provided.
         For example, "1D" for daily data, "1H" for hourly data, etc.
-    prediction_length: int
+    prediction_length
         Number of time steps ahead (length of the forecast horizon) the model will be optimized
         to predict. At inference time, this will be the number of time steps the model will
         predict.
-    name: str
+    name
         Name of the model. Also, name of subdirectory inside path where model will be saved.
-    eval_metric: str
+    eval_metric
         objective function the model intends to optimize, will use WQL by default.
-    hyperparameters:
+    hyperparameters
         various hyperparameters that will be used by model (can be search spaces instead of
         fixed values). See *Other Parameters* in each inheriting model's documentation for
         possible values.
@@ -72,12 +72,12 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
 
     def __init__(
         self,
-        freq: Optional[str] = None,
+        freq: str | None = None,
         prediction_length: int = 1,
-        path: Optional[str] = None,
-        name: Optional[str] = None,
-        eval_metric: Optional[str] = None,
-        hyperparameters: Optional[Dict[str, Any]] = None,
+        path: str | None = None,
+        name: str | None = None,
+        eval_metric: str | None = None,
+        hyperparameters: dict[str, Any] | None = None,
         **kwargs,  # noqa
     ):
         super().__init__(
@@ -89,9 +89,9 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
             hyperparameters=hyperparameters,
             **kwargs,
         )
-        self.gts_predictor: Optional[GluonTSPredictor] = None
-        self._ohe_generator_known: Optional[OneHotEncoder] = None
-        self._ohe_generator_past: Optional[OneHotEncoder] = None
+        self.gts_predictor: GluonTSPredictor | None = None
+        self._ohe_generator_known: OneHotEncoder | None = None
+        self._ohe_generator_past: OneHotEncoder | None = None
         self.callbacks = []
         # Following attributes may be overridden during fit() based on train_data & model parameters
         self.num_feat_static_cat = 0
@@ -100,12 +100,12 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
         self.num_feat_dynamic_real = 0
         self.num_past_feat_dynamic_cat = 0
         self.num_past_feat_dynamic_real = 0
-        self.feat_static_cat_cardinality: List[int] = []
-        self.feat_dynamic_cat_cardinality: List[int] = []
-        self.past_feat_dynamic_cat_cardinality: List[int] = []
+        self.feat_static_cat_cardinality: list[int] = []
+        self.feat_dynamic_cat_cardinality: list[int] = []
+        self.past_feat_dynamic_cat_cardinality: list[int] = []
         self.negative_data = True
 
-    def save(self, path: Optional[str] = None, verbose: bool = True) -> str:
+    def save(self, path: str | None = None, verbose: bool = True) -> str:
         # we flush callbacks instance variable if it has been set. it can keep weak references which breaks training
         self.callbacks = []
         # The GluonTS predictor is serialized using custom logic
@@ -153,18 +153,17 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
                 assert dataset.static_features is not None, (
                     "Static features must be provided if num_feat_static_cat > 0"
                 )
-                feat_static_cat = dataset.static_features[self.covariate_metadata.static_features_cat]
-                self.feat_static_cat_cardinality = feat_static_cat.nunique().tolist()
+                self.feat_static_cat_cardinality = list(self.covariate_metadata.static_cat_cardinality.values())
 
         disable_known_covariates = model_params.get("disable_known_covariates", False)
         if not disable_known_covariates and self.supports_known_covariates:
             self.num_feat_dynamic_cat = len(self.covariate_metadata.known_covariates_cat)
             self.num_feat_dynamic_real = len(self.covariate_metadata.known_covariates_real)
             if self.num_feat_dynamic_cat > 0:
-                feat_dynamic_cat = dataset[self.covariate_metadata.known_covariates_cat]
                 if self.supports_cat_covariates:
-                    self.feat_dynamic_cat_cardinality = feat_dynamic_cat.nunique().tolist()
+                    self.feat_dynamic_cat_cardinality = list(self.covariate_metadata.known_cat_cardinality.values())
                 else:
+                    feat_dynamic_cat = dataset[self.covariate_metadata.known_covariates_cat]
                     # If model doesn't support categorical covariates, convert them to real via one hot encoding
                     self._ohe_generator_known = OneHotEncoder(
                         max_levels=model_params.get("max_cat_cardinality", 100),
@@ -180,10 +179,12 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
             self.num_past_feat_dynamic_cat = len(self.covariate_metadata.past_covariates_cat)
             self.num_past_feat_dynamic_real = len(self.covariate_metadata.past_covariates_real)
             if self.num_past_feat_dynamic_cat > 0:
-                past_feat_dynamic_cat = dataset[self.covariate_metadata.past_covariates_cat]
                 if self.supports_cat_covariates:
-                    self.past_feat_dynamic_cat_cardinality = past_feat_dynamic_cat.nunique().tolist()
+                    self.past_feat_dynamic_cat_cardinality = list(
+                        self.covariate_metadata.past_cat_cardinality.values()
+                    )
                 else:
+                    past_feat_dynamic_cat = dataset[self.covariate_metadata.past_covariates_cat]
                     # If model doesn't support categorical covariates, convert them to real via one hot encoding
                     self._ohe_generator_past = OneHotEncoder(
                         max_levels=model_params.get("max_cat_cardinality", 100),
@@ -234,7 +235,7 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
 
         return self._get_default_hyperparameters() | init_args
 
-    def _get_estimator_init_args(self) -> Dict[str, Any]:
+    def _get_estimator_init_args(self) -> dict[str, Any]:
         """Get GluonTS specific constructor arguments for estimator objects, an alias to `self.get_hyperparameters`
         for better readability."""
         return self.get_hyperparameters()
@@ -254,6 +255,7 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
             "max_epochs": init_args["max_epochs"],
             "callbacks": self.callbacks,
             "enable_progress_bar": False,
+            "enable_model_summary": False,
             "default_root_dir": self.path,
         }
 
@@ -277,8 +279,8 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
 
         return torch.cuda.is_available()
 
-    def get_minimum_resources(self, is_gpu_available: bool = False) -> Dict[str, Union[int, float]]:
-        minimum_resources: Dict[str, Union[int, float]] = {"num_cpus": 1}
+    def get_minimum_resources(self, is_gpu_available: bool = False) -> dict[str, int | float]:
+        minimum_resources: dict[str, int | float] = {"num_cpus": 1}
         # if GPU is available, we train with 1 GPU per trial
         if is_gpu_available:
             minimum_resources["num_gpus"] = 1
@@ -289,8 +291,8 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
     @overload
     def _to_gluonts_dataset(self, time_series_df: TimeSeriesDataFrame, known_covariates=None) -> GluonTSDataset: ...
     def _to_gluonts_dataset(
-        self, time_series_df: Optional[TimeSeriesDataFrame], known_covariates: Optional[TimeSeriesDataFrame] = None
-    ) -> Optional[GluonTSDataset]:
+        self, time_series_df: TimeSeriesDataFrame | None, known_covariates: TimeSeriesDataFrame | None = None
+    ) -> GluonTSDataset | None:
         if time_series_df is not None:
             # TODO: Preprocess real-valued features with StdScaler?
             if self.num_feat_static_cat > 0:
@@ -388,10 +390,10 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
     def _fit(
         self,
         train_data: TimeSeriesDataFrame,
-        val_data: Optional[TimeSeriesDataFrame] = None,
-        time_limit: Optional[float] = None,
-        num_cpus: Optional[int] = None,
-        num_gpus: Optional[int] = None,
+        val_data: TimeSeriesDataFrame | None = None,
+        time_limit: float | None = None,
+        num_cpus: int | None = None,
+        num_gpus: int | None = None,
         verbosity: int = 2,
         **kwargs,
     ) -> None:
@@ -438,9 +440,9 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
 
     def _get_callbacks(
         self,
-        time_limit: Optional[float],
-        early_stopping_patience: Optional[int] = None,
-    ) -> List[Callable]:
+        time_limit: float | None,
+        early_stopping_patience: int | None = None,
+    ) -> list[Callable]:
         """Retrieve a list of callback objects for the GluonTS trainer"""
         from lightning.pytorch.callbacks import EarlyStopping, Timer
 
@@ -454,7 +456,7 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
     def _predict(
         self,
         data: TimeSeriesDataFrame,
-        known_covariates: Optional[TimeSeriesDataFrame] = None,
+        known_covariates: TimeSeriesDataFrame | None = None,
         **kwargs,
     ) -> TimeSeriesDataFrame:
         if self.gts_predictor is None:
@@ -471,9 +473,9 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
     def _predict_gluonts_forecasts(
         self,
         data: TimeSeriesDataFrame,
-        known_covariates: Optional[TimeSeriesDataFrame] = None,
-        num_samples: Optional[int] = None,
-    ) -> List[Forecast]:
+        known_covariates: TimeSeriesDataFrame | None = None,
+        num_samples: int | None = None,
+    ) -> list[Forecast]:
         assert self.gts_predictor is not None, "GluonTS models must be fit before predicting."
         gts_data = self._to_gluonts_dataset(data, known_covariates=known_covariates)
         return list(
@@ -483,7 +485,7 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
             )
         )
 
-    def _stack_quantile_forecasts(self, forecasts: List[QuantileForecast], item_ids: pd.Index) -> pd.DataFrame:
+    def _stack_quantile_forecasts(self, forecasts: list[QuantileForecast], item_ids: pd.Index) -> pd.DataFrame:
         # GluonTS always saves item_id as a string
         item_id_to_forecast = {str(f.item_id): f for f in forecasts}
         result_dfs = []
@@ -496,7 +498,7 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
         columns_order = ["mean"] + [str(q) for q in self.quantile_levels]
         return forecast_df[columns_order]
 
-    def _stack_sample_forecasts(self, forecasts: List[SampleForecast], item_ids: pd.Index) -> pd.DataFrame:
+    def _stack_sample_forecasts(self, forecasts: list[SampleForecast], item_ids: pd.Index) -> pd.DataFrame:
         item_id_to_forecast = {str(f.item_id): f for f in forecasts}
         samples_per_item = []
         for item_id in item_ids:
@@ -509,7 +511,7 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
         return pd.DataFrame(forecast_array, columns=["mean"] + [str(q) for q in self.quantile_levels])
 
     def _stack_distribution_forecasts(
-        self, forecasts: List["DistributionForecast"], item_ids: pd.Index
+        self, forecasts: list["DistributionForecast"], item_ids: pd.Index
     ) -> pd.DataFrame:
         import torch
         from gluonts.torch.distributions import AffineTransformed
@@ -523,7 +525,7 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
             "Expected forecast.distribution to be an instance of AffineTransformed"
         )
 
-        def stack_distributions(distributions: List[Distribution]) -> Distribution:
+        def stack_distributions(distributions: list[Distribution]) -> Distribution:
             """Stack multiple torch.Distribution objects into a single distribution"""
             last_dist: Distribution = distributions[-1]
 
@@ -561,18 +563,18 @@ class AbstractGluonTSModel(AbstractTimeSeriesModel):
 
     def _gluonts_forecasts_to_data_frame(
         self,
-        forecasts: List[Forecast],
+        forecasts: list[Forecast],
         forecast_index: pd.MultiIndex,
     ) -> TimeSeriesDataFrame:
         from gluonts.torch.model.forecast import DistributionForecast
 
-        item_ids = forecast_index.unique(level=ITEMID)
+        item_ids = forecast_index.unique(level=TimeSeriesDataFrame.ITEMID)
         if isinstance(forecasts[0], SampleForecast):
-            forecast_df = self._stack_sample_forecasts(cast(List[SampleForecast], forecasts), item_ids)
+            forecast_df = self._stack_sample_forecasts(cast(list[SampleForecast], forecasts), item_ids)
         elif isinstance(forecasts[0], QuantileForecast):
-            forecast_df = self._stack_quantile_forecasts(cast(List[QuantileForecast], forecasts), item_ids)
+            forecast_df = self._stack_quantile_forecasts(cast(list[QuantileForecast], forecasts), item_ids)
         elif isinstance(forecasts[0], DistributionForecast):
-            forecast_df = self._stack_distribution_forecasts(cast(List[DistributionForecast], forecasts), item_ids)
+            forecast_df = self._stack_distribution_forecasts(cast(list[DistributionForecast], forecasts), item_ids)
         else:
             raise ValueError(f"Unrecognized forecast type {type(forecasts[0])}")
 

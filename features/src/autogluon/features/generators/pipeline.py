@@ -97,7 +97,9 @@ class PipelineFeatureGenerator(BulkFeatureGenerator):
 
     def _infer_features_in_full(self, X: DataFrame, feature_metadata_in: FeatureMetadata = None):
         super()._infer_features_in_full(X=X, feature_metadata_in=feature_metadata_in)
-        type_map_real = get_type_map_real(X[self.feature_metadata_in.get_features()])
+        features = self.feature_metadata_in.get_features()
+        # Selecting every column copies the frame (see the same step in `AsTypeFeatureGenerator`).
+        type_map_real = get_type_map_real(X if features == list(X.columns) else X[features])
         self._feature_metadata_in_real = FeatureMetadata(
             type_map_raw=type_map_real, type_group_map_special=self.feature_metadata_in.get_type_group_map_raw()
         )
@@ -172,7 +174,7 @@ class PipelineFeatureGenerator(BulkFeatureGenerator):
             self._log(log_level, "\t\tThese features carry no predictive signal and should be manually investigated.")
             self._log(log_level, "\t\tThis is typically a feature which has the same value for all rows.")
             self._log(log_level, "\t\tThese features do not need to be present at inference time.")
-        if self._feature_metadata_in_unused.get_features():
+        if self._feature_metadata_in_unused is not None and self._feature_metadata_in_unused.get_features():
             # TODO: Consider highlighting why a feature was unused
             #  (complex to implement, can check if was valid input to any generator in a generator group through feature chaining)
             self._log(

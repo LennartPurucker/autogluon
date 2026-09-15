@@ -3,6 +3,7 @@ import sys
 from typing import Tuple
 
 from .. import __version__
+from .gpu_count import torch_version_info, visible_device_memory
 from .resource_utils import ResourceManager, get_resource_manager
 
 
@@ -40,7 +41,7 @@ def get_ag_system_info_disk_space(path: str) -> Tuple[str, int]:
         return msg, disk_verbosity
 
 
-def get_ag_system_info(*, path: str = None, include_gpu_count=False, include_pytorch=False, include_cuda=False) -> str:
+def get_ag_system_info(*, path: str = None, include_gpu_count=False, include_pytorch=True, include_cuda=True) -> str:
     resource_manager: ResourceManager = get_resource_manager()
     system_num_cpus = resource_manager.get_cpu_count()
     available_mem = ResourceManager.get_available_virtual_mem("GB")
@@ -49,7 +50,7 @@ def get_ag_system_info(*, path: str = None, include_gpu_count=False, include_pyt
     version = __version__
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     msg_list = [
-        f"=================== System Info ===================",
+        "=================== System Info ===================",
         f"AutoGluon Version:  {version}",
         f"Python Version:     {python_version}",
         f"Operating System:   {platform.system()}",
@@ -57,28 +58,74 @@ def get_ag_system_info(*, path: str = None, include_gpu_count=False, include_pyt
         f"Platform Version:   {platform.version()}",
         f"CPU Count:          {system_num_cpus}",
     ]
+    # torch's version and CUDA build come from its version file while torch is not imported:
+    # importing torch for two banner lines costs seconds on a network file system.
+    version_info = None if "torch" in sys.modules else torch_version_info()
     if include_pytorch:
-        try:
-            import torch
+        if version_info is not None:
+            torch_version = version_info[0]
+        else:
+            try:
+                import torch
 
-            torch_version = torch.__version__
-        except Exception as e:
-            torch_version = "Can't import torch"
+                torch_version = torch.__version__
+            except Exception:
+                torch_version = "Can't import torch"
         msg_list.append(f"Pytorch Version:    {torch_version}")
     if include_cuda:
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                cuda_version = torch.version.cuda
-            else:
+        if version_info is not None:
+            cuda_version = version_info[1]
+            if cuda_version is None or not resource_manager.get_gpu_count_torch(cuda_only=True):
                 cuda_version = "CUDA is not available"
-        except Exception as e:
-            cuda_version = "Can't get cuda version from torch"
+        else:
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    cuda_version = torch.version.cuda
+                else:
+                    cuda_version = "CUDA is not available"
+            except Exception:
+                cuda_version = "Can't get cuda version from torch"
         msg_list.append(f"CUDA Version:       {cuda_version}")
     if include_gpu_count:
         try:
-            system_num_gpus = resource_manager.get_gpu_count_torch()
+            # Per-device memory from NVML while torch is not imported (device-wide free and used
+            # bytes, since this process holds none yet, and the physical total, which is a few hundred
+            # MB above the total CUDA reports); from torch once it is.
+            device_memory = None if "torch" in sys.modules else visible_device_memory()
+            if device_memory is not None:
+                system_num_gpus = len(device_memory)
+                per_device = [(total, total - free) for total, free, used in device_memory]
+            else:
+                import torch
+
+                system_num_gpus = resource_manager.get_gpu_count_torch()
+                per_device = [
+                    (torch.cuda.get_device_properties(i).total_memory, torch.cuda.memory_allocated(i))
+                    for i in range(system_num_gpus)
+                ]
+            gpu_memory_info = []
+            combined_free_memory = 0
+            total_allocated_memory = 0
+            combined_gpu_memory = 0
+            for i, (total_memory_gpu, allocated_memory) in enumerate(per_device):
+                total_memory_gb = total_memory_gpu / (1024**3)  # Convert bytes to GB
+                allocated_memory_gb = allocated_memory / (1024**3)
+                free_memory_gb = total_memory_gb - allocated_memory_gb
+
+                combined_free_memory += free_memory_gb
+                total_allocated_memory += allocated_memory_gb
+                combined_gpu_memory += total_memory_gb
+
+                gpu_memory_info.append(f"GPU {i}: {free_memory_gb:.2f}/{total_memory_gb:.2f} GB")
+
+            gpu_memory_str = " | ".join(gpu_memory_info)
+            msg_list.append(f"GPU Memory:         {gpu_memory_str}")
+            msg_list.append(
+                f"Total GPU Memory:   Free: {combined_free_memory:.2f} GB, Allocated: {total_allocated_memory:.2f} GB, Total: {combined_gpu_memory:.2f} GB"
+            )
+
         except Exception as e:
             system_num_gpus = f"WARNING: Exception was raised when calculating GPU count ({e.__class__.__name__})"
         msg_list.append(f"GPU Count:          {system_num_gpus}")
@@ -90,7 +137,7 @@ def get_ag_system_info(*, path: str = None, include_gpu_count=False, include_pyt
     if path is not None:
         disk_avail_msg, _ = get_ag_system_info_disk_space(path=path)
         msg_list.append(disk_avail_msg)
-    msg_list.append(f"===================================================")
+    msg_list.append("===================================================")
 
     msg = "\n".join(msg_list)
     return msg

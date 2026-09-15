@@ -9,40 +9,87 @@ from pandas import DataFrame, Series
 logger = logging.getLogger(__name__)
 
 
+#: dtype -> family, for the dtypes seen so far. A frame's columns share a handful of dtypes, so
+#: classifying each dtype once instead of once per column removes most of the type-inference cost
+#: on wide frames. Only successful classifications are cached, so an unrecognized dtype is logged
+#: every time as before.
+_TYPE_FAMILY_RAW_CACHE: dict = {}
+
+
 def get_type_family_raw(dtype) -> str:
     """From dtype, gets the dtype family."""
+    # Hashing a CategoricalDtype hashes its categories, and every categorical column of a frame
+    # has its own dtype object, so the cache never pays off for them; the family is fixed anyway.
+    if isinstance(dtype, pd.CategoricalDtype):
+        return "category"
+    try:
+        return _TYPE_FAMILY_RAW_CACHE[dtype]
+    except (KeyError, TypeError):  # TypeError: an unhashable dtype is classified without the cache
+        pass
+    type_family, cacheable = _get_type_family_raw(dtype)
+    if cacheable:
+        try:
+            _TYPE_FAMILY_RAW_CACHE[dtype] = type_family
+        except TypeError:
+            pass
+    return type_family
+
+
+def _get_type_family_raw(dtype) -> tuple[str, bool]:
+    """The dtype family, and whether the classification went through without an error log."""
+    cacheable = True
     try:
         if isinstance(dtype, pd.SparseDtype):
             dtype = dtype.subtype
         if dtype.name == "category":
-            return "category"
+            return "category", cacheable
         if "datetime" in dtype.name:
-            return "datetime"
+            return "datetime", cacheable
         if "string" in dtype.name:
-            return "object"
+            return "object", cacheable
         elif np.issubdtype(dtype, np.integer):
-            return "int"
+            return "int", cacheable
         elif np.issubdtype(dtype, np.floating):
-            return "float"
+            return "float", cacheable
     except Exception as err:
         logger.error(
             f"Warning: dtype {dtype} is not recognized as a valid dtype by numpy! "
             f"AutoGluon may incorrectly handle this feature..."
         )
         logger.error(err)
+        cacheable = False
 
     if dtype.name in ["bool", "bool_"]:
-        return "bool"
+        return "bool", cacheable
     elif dtype.name in ["str", "string", "object"]:
-        return "object"
+        return "object", cacheable
     else:
+        return dtype.name, cacheable
+
+
+#: dtype -> `dtype.name`. numpy's name lookup is slow enough to matter when it runs per column at
+#: every generator stage of a wide frame; the columns share a handful of dtypes.
+_DTYPE_NAME_CACHE: dict = {}
+
+
+def _dtype_name(dtype) -> str:
+    if isinstance(dtype, pd.CategoricalDtype):  # see `get_type_family_raw`: hashing it hashes the categories
+        return "category"
+    try:
+        return _DTYPE_NAME_CACHE[dtype]
+    except KeyError:
+        pass
+    except TypeError:  # unhashable dtype
         return dtype.name
+    name = dtype.name
+    _DTYPE_NAME_CACHE[dtype] = name
+    return name
 
 
 # Real dtypes
 def get_type_map_real(df: DataFrame) -> dict:
     features_types = df.dtypes.to_dict()
-    return {k: v.name for k, v in features_types.items()}
+    return {k: _dtype_name(v) for k, v in features_types.items()}
 
 
 # Raw dtypes (Real dtypes family)
@@ -53,7 +100,11 @@ def get_type_map_raw(df: DataFrame) -> dict:
 
 def get_type_map_special(X: DataFrame) -> dict:
     type_map_special = {}
-    for column in X:
+    for column, dtype in zip(X.columns, X.dtypes):
+        # Only sparse and object-family columns can carry a special type (see `get_types_special`), and both
+        # are decided from the dtype, so the other columns are skipped without materializing a Series.
+        if not isinstance(dtype, pd.SparseDtype) and get_type_family_raw(dtype) != "object":
+            continue
         types_special = get_types_special(X[column])
         if types_special:
             type_map_special[column] = types_special
@@ -104,16 +155,17 @@ def check_if_datetime_as_object_feature(X: Series) -> bool:
     type_family = get_type_family_raw(X.dtype)
     # TODO: Check if low numeric numbers, could be categorical encoding!
     # TODO: If low numeric, potentially it is just numeric instead of date
-    if X.isnull().all():
-        return False
     if type_family != "object":  # TODO: seconds from epoch support
+        return False
+    # checked after the dtype so that the (many) non-object columns never pay for a full pass over their values
+    if X.isnull().all():
         return False
     try:
         # TODO: pd.Series(['20170204','20170205','20170206']) is incorrectly not detected as datetime_as_object
         #  But we don't want pd.Series(['184','822828','20170206']) to be detected as datetime_as_object
         #  Need some smart logic (check min/max values?, check last 2 values don't go >31?)
         pd.to_numeric(X)
-    except:
+    except (ValueError, TypeError):
         try:
             if len(X) > 500:
                 # Sample to speed-up type inference
@@ -122,7 +174,7 @@ def check_if_datetime_as_object_feature(X: Series) -> bool:
             if result.isnull().mean() > 0.8:  # If over 80% of the rows are NaN
                 return False
             return True
-        except:
+        except (ValueError, TypeError):
             return False
     else:
         return False
@@ -173,18 +225,20 @@ def get_bool_true_val(uniques):
     # and therefore we use the unsorted values.
     try:
         # Sort the values to avoid relying on row-order when determining which value is mapped to `True`.
-        uniques.sort()
-    except:
+        uniques = np.sort(uniques)
+    except (ValueError, TypeError):
         pass
     replace_val = uniques[1]
+    # This is to ensure that we don't map a missing value to `True` in the boolean.
+    # `pd.isna` is used instead of `np.isnan` because it handles np.nan, None and pd.NA uniformly and
+    # always returns a real bool. `np.isnan(pd.NA)` returns pd.NA rather than raising, so it was not
+    # caught by the except clause and the following `if is_nan:` raised
+    # "TypeError: boolean value of NA is ambiguous" for pandas nullable dtypes.
     try:
-        # This is to ensure that we don't map np.nan to `True` in the boolean.
-        is_nan = np.isnan(replace_val)
-    except:
-        if replace_val is None:
-            is_nan = True
-        else:
-            is_nan = False
+        is_nan = bool(pd.isna(replace_val))
+    except (ValueError, TypeError):
+        # Non-scalar unique value, for which pd.isna would return an array.
+        is_nan = replace_val is None
     if is_nan:
         replace_val = uniques[0]
     return replace_val

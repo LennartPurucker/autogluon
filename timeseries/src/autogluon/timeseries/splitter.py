@@ -1,6 +1,6 @@
-from typing import Iterator, Optional, Tuple
+from typing import Iterator
 
-from .dataset.ts_dataframe import TimeSeriesDataFrame
+from autogluon.timeseries.dataset import TimeSeriesDataFrame
 
 __all__ = [
     "AbstractWindowSplitter",
@@ -13,7 +13,7 @@ class AbstractWindowSplitter:
         self.prediction_length = prediction_length
         self.num_val_windows = num_val_windows
 
-    def split(self, data: TimeSeriesDataFrame) -> Iterator[Tuple[TimeSeriesDataFrame, TimeSeriesDataFrame]]:
+    def split(self, data: TimeSeriesDataFrame) -> Iterator[tuple[TimeSeriesDataFrame, TimeSeriesDataFrame]]:
         raise NotImplementedError
 
 
@@ -33,21 +33,21 @@ class ExpandingWindowSplitter(AbstractWindowSplitter):
 
     Parameters
     ----------
-    prediction_length : int
+    prediction_length
         Length of the forecast horizon.
-    num_val_windows: int, default = 1
+    num_val_windows
         Number of windows to generate from each time series in the dataset.
-    val_step_size : int, optional
+    val_step_size
         The end of each subsequent window is moved this many time steps forward.
     """
 
-    def __init__(self, prediction_length: int, num_val_windows: int = 1, val_step_size: Optional[int] = None):
+    def __init__(self, prediction_length: int, num_val_windows: int = 1, val_step_size: int | None = None):
         super().__init__(prediction_length=prediction_length, num_val_windows=num_val_windows)
         if val_step_size is None:
             val_step_size = prediction_length
         self.val_step_size = val_step_size
 
-    def split(self, data: TimeSeriesDataFrame) -> Iterator[Tuple[TimeSeriesDataFrame, TimeSeriesDataFrame]]:
+    def split(self, data: TimeSeriesDataFrame) -> Iterator[tuple[TimeSeriesDataFrame, TimeSeriesDataFrame]]:
         """Generate train and validation folds for a time series dataset."""
         for window_idx in range(1, self.num_val_windows + 1):
             val_end = -(self.num_val_windows - window_idx) * self.val_step_size
@@ -57,27 +57,3 @@ class ExpandingWindowSplitter(AbstractWindowSplitter):
             train_data = data.slice_by_timestep(None, train_end)
             val_data = data.slice_by_timestep(None, val_end)
             yield train_data, val_data
-
-
-class AbstractTimeSeriesSplitter:
-    def __init__(self, *args, **kwargs):
-        raise ValueError(
-            "`AbstractTimeSeriesSplitter` has been deprecated. "
-            "Please use `autogluon.timeseries.splitter.ExpandingWindowSplitter` instead."
-        )
-
-
-class MultiWindowSplitter(AbstractTimeSeriesSplitter):
-    def __init__(self, *args, **kwargs):
-        raise ValueError(
-            "`MultiWindowSplitter` has been deprecated. "
-            "Please use `autogluon.timeseries.splitter.ExpandingWindowSplitter` instead."
-        )
-
-
-class LastWindowSplitter(MultiWindowSplitter):
-    def __init__(self, *args, **kwargs):
-        raise ValueError(
-            "`LastWindowSplitter` has been deprecated. "
-            "Please use `autogluon.timeseries.splitter.ExpandingWindowSplitter` instead."
-        )

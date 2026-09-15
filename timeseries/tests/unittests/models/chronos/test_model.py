@@ -1,4 +1,3 @@
-from typing import Optional
 from unittest import mock
 
 import numpy as np
@@ -17,7 +16,7 @@ from ...common import (
     get_data_frame_with_item_index,
     get_data_frame_with_variable_lengths,
 )
-from ..common import CHRONOS_BOLT_MODEL_PATH, CHRONOS_CLASSIC_MODEL_PATH
+from ..common import CHRONOS_BOLT_MODEL_PATH, CHRONOS_CLASSIC_MODEL_PATH, DEVICE_TEST_CASES
 
 DATASETS = [DUMMY_TS_DATAFRAME, DATAFRAME_WITH_STATIC, DATAFRAME_WITH_COVARIATES]
 GPU_AVAILABLE = torch.cuda.is_available()
@@ -66,7 +65,7 @@ def default_chronos_tiny_model(request, chronos_model_path) -> ChronosModel:
 
 
 @pytest.fixture(scope="module", params=HYPERPARAMETER_DICTS)
-def default_chronos_tiny_model_gpu(request, chronos_model_path) -> Optional[ChronosModel]:
+def default_chronos_tiny_model_gpu(request, chronos_model_path) -> ChronosModel | None:
     if not GPU_AVAILABLE:
         pytest.skip(reason="GPU not available")
 
@@ -263,7 +262,6 @@ DTYPE_TEST_CASES = [  # dtype_arg, expected_dtype
     (torch.float64, torch.float64),
     ("bfloat16", torch.bfloat16),
     ("float32", torch.float32),
-    ("float64", torch.float64),
 ]
 
 
@@ -428,7 +426,7 @@ def test_fine_tune_eval_max_items_is_used(chronos_model_path, max_items):
     )
 
     with mock.patch(
-        "autogluon.timeseries.models.chronos.pipeline.utils.ChronosFineTuningDataset.__init__"
+        "autogluon.timeseries.models.chronos.utils.ChronosFineTuningDataset.__init__"
     ) as chronos_ft_dataset:
         chronos_ft_dataset.side_effect = [None, None]
 
@@ -454,7 +452,7 @@ def test_fine_tune_shuffle_buffer_size_is_used(chronos_model_path, shuffle_buffe
     )
 
     with mock.patch(
-        "autogluon.timeseries.models.chronos.pipeline.utils.ChronosFineTuningDataset.shuffle"
+        "autogluon.timeseries.models.chronos.utils.ChronosFineTuningDataset.shuffle"
     ) as chronos_ft_dataset_shuffle:
         try:
             model.fit(DUMMY_TS_DATAFRAME)
@@ -477,3 +475,65 @@ def test_when_search_spaces_provided_then_model_can_hpo():
     )
     assert len(hpo_models) >= 1
     assert analysis["best_reward"] > float("-inf")
+
+
+def test_when_chronos_bolt_fine_tuned_with_custom_quantiles_then_loaded_model_has_custom_quantiles(temp_model_path):
+    custom_quantiles = [0.05, 0.15, 0.5, 0.993]
+    model = ChronosModel(
+        path=temp_model_path,
+        hyperparameters={"model_path": CHRONOS_BOLT_MODEL_PATH, "fine_tune": True, "fine_tune_steps": 1},
+        quantile_levels=custom_quantiles,
+    )
+    model.fit(DUMMY_TS_DATAFRAME)
+    model.save()
+
+    loaded_model = ChronosModel.load(model.path)
+    assert loaded_model.model_pipeline.quantiles == model.model_pipeline.quantiles == custom_quantiles
+    predictions = loaded_model.predict(DUMMY_TS_DATAFRAME)
+    assert not predictions.isna().any().any()
+    assert predictions.columns.tolist() == ["mean"] + [str(q) for q in custom_quantiles]
+
+
+def test_when_chronos_bolt_no_fine_tune_with_custom_quantiles_then_original_quantiles_preserved():
+    original_quantiles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    model = ChronosModel(
+        hyperparameters={"model_path": CHRONOS_BOLT_MODEL_PATH, "fine_tune": False},
+        quantile_levels=[0.25, 0.75],
+    )
+    model.fit(train_data=DUMMY_TS_DATAFRAME)
+    assert model.model_pipeline.quantiles == original_quantiles
+
+
+def test_when_revision_provided_then_from_pretrained_is_called_with_revision(chronos_model_path):
+    model_revision = "my-test-branch"
+    model = ChronosModel(
+        hyperparameters={"model_path": chronos_model_path, "revision": model_revision, "device": "cpu"},
+    )
+
+    with mock.patch("chronos.BaseChronosPipeline.from_pretrained") as mock_from_pretrained:
+        mock_from_pretrained.return_value = mock.MagicMock()
+        model.fit(train_data=DUMMY_TS_DATAFRAME)
+        model.load_model_pipeline()
+
+    mock_from_pretrained.assert_called_once()
+    assert mock_from_pretrained.call_args.kwargs.get("revision") == model_revision
+
+
+@pytest.mark.parametrize("device_arg, cuda_available, expected_device", DEVICE_TEST_CASES)
+def test_when_device_provided_then_from_pretrained_is_called_with_device(device_arg, cuda_available, expected_device):
+    model = ChronosModel(
+        hyperparameters={"model_path": CHRONOS_BOLT_MODEL_PATH, "device": device_arg},
+    )
+
+    with mock.patch("chronos.BaseChronosPipeline.from_pretrained") as mock_from_pretrained:
+        mock_from_pretrained.return_value = mock.MagicMock()
+        # _has_tf32 queries the real CUDA driver, which is unavailable when cuda_available is mocked to True
+        with (
+            mock.patch("torch.cuda.is_available", return_value=cuda_available),
+            mock.patch.object(ChronosModel, "_has_tf32", return_value=False),
+        ):
+            model.fit(train_data=DUMMY_TS_DATAFRAME)
+            model.load_model_pipeline()
+
+    mock_from_pretrained.assert_called_once()
+    assert mock_from_pretrained.call_args.kwargs.get("device_map") == expected_device

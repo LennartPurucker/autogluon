@@ -36,13 +36,15 @@ For example:
         ],
         'CAT': {},
         'XGB': {},
+        'EBM': {},
         'FASTAI': {},
         'RF': [{'criterion': 'gini', 'ag_args': {'name_suffix': 'Gini', 'problem_types': ['binary', 'multiclass']}}, {'criterion': 'entropy', 'ag_args': {'name_suffix': 'Entr', 'problem_types': ['binary', 'multiclass']}}, {'criterion': 'squared_error', 'ag_args': {'name_suffix': 'MSE', 'problem_types': ['regression', 'quantile']}}],
         'XT': [{'criterion': 'gini', 'ag_args': {'name_suffix': 'Gini', 'problem_types': ['binary', 'multiclass']}}, {'criterion': 'entropy', 'ag_args': {'name_suffix': 'Entr', 'problem_types': ['binary', 'multiclass']}}, {'criterion': 'squared_error', 'ag_args': {'name_suffix': 'MSE', 'problem_types': ['regression', 'quantile']}}],
         'KNN': [{'weights': 'uniform', 'ag_args': {'name_suffix': 'Unif'}}, {'weights': 'distance', 'ag_args': {'name_suffix': 'Dist'}}],
     }
 
-Here is the mapping of keys to models:
+Here is the mapping of keys to models, in registration order
+(``autogluon.tabular.registry.ag_model_registry.key_to_cls_map()`` returns the live mapping):
 
 .. code-block:: python
 
@@ -54,18 +56,25 @@ Here is the mapping of keys to models:
         "CAT": CatBoostModel,
         "XGB": XGBoostModel,
         "REALMLP": RealMLPModel,
-        "MITRA": MitraModel,
-        "TABICL": TabICLModel,
-        "TABPFNV2": TabPFNV2Model,
         "NN_TORCH": TabularNeuralNetTorchModel,
         "LR": LinearModel,
         "FASTAI": NNFastAiTabularModel,
-        "TABM": TabMModel,
+        "GBM_PREP": PrepLGBModel,
         "AG_TEXT_NN": TextPredictorModel,
         "AG_IMAGE_NN": ImagePredictorModel,
         "AG_AUTOMM": MultiModalPredictorModel,
         "FT_TRANSFORMER": FTTransformerModel,
-        "FASTTEXT": FastTextModel,
+        "TABDPT": TabDPTModel,
+        "TABDPT-TURBO": TabDPTTurboModel,
+        "TABICL": TabICLModel,
+        "TABM": TabMModel,
+        "TABPFNMIX": TabPFNMixModel,
+        "TABPFN-2.6": TabPFNv26Model,
+        "REALTABPFN-V2": RealTabPFNv2Model,
+        "REALTABPFN-V2.5": RealTabPFNv25Model,
+        "MITRA": MitraModel,
+        "TABPFN-3": TabPFN3Model,
+        "NORI": NoriModel,
         "ENS_WEIGHTED": GreedyWeightedEnsembleModel,
         "SIMPLE_ENS_WEIGHTED": SimpleWeightedEnsembleModel,
 
@@ -77,9 +86,13 @@ Here is the mapping of keys to models:
         "IM_BOOSTEDRULES": BoostedRulesModel,
 
         "DUMMY": DummyModel,
+        "EBM": EBMModel,
     }
 
-Here is the mapping of model types to their default names when trained:
+The ``"TABPFNV2"`` key was renamed to ``"REALTABPFN-V2"`` in v1.5.0.
+
+Here is the mapping of model types to their default names when trained
+(``ag_model_registry.name_map()`` returns the live mapping):
 
 .. code-block:: python
 
@@ -91,19 +104,26 @@ Here is the mapping of model types to their default names when trained:
         CatBoostModel: 'CatBoost',
         XGBoostModel: 'XGBoost',
         RealMLPModel: 'RealMLP',
-        TabMModel: 'TabM',
-        MitraModel: 'Mitra',
-        TabICLModel: 'TabICL',
-        TabPFNV2Model: 'TabPFNv2',
         TabularNeuralNetTorchModel: 'NeuralNetTorch',
         LinearModel: 'LinearModel',
         NNFastAiTabularModel: 'NeuralNetFastAI',
+        PrepLGBModel: 'LightGBMPrep',
         TextPredictorModel: 'TextPredictor',
         ImagePredictorModel: 'ImagePredictor',
         MultiModalPredictorModel: 'MultiModalPredictor',
 
         FTTransformerModel: 'FTTransformer',
-        FastTextModel: 'FastText',
+        TabDPTModel: 'TabDPT',
+        TabDPTTurboModel: 'TabDPT-Turbo',
+        TabICLModel: 'TabICL',
+        TabMModel: 'TabM',
+        TabPFNMixModel: 'TabPFNMix',
+        TabPFNv26Model: 'TabPFN-2.6',
+        RealTabPFNv2Model: 'RealTabPFN-v2',
+        RealTabPFNv25Model: 'RealTabPFN-v2.5',
+        MitraModel: 'Mitra',
+        TabPFN3Model: 'TabPFN-3',
+        NoriModel: 'Nori',
         GreedyWeightedEnsembleModel: 'WeightedEnsemble',
         SimpleWeightedEnsembleModel: 'WeightedEnsemble',
 
@@ -113,6 +133,9 @@ Here is the mapping of model types to their default names when trained:
         FigsModel: 'Figs',
         HSTreeModel: 'HierarchicalShrinkageTree',
         BoostedRulesModel: 'BoostedRules',
+
+        DummyModel: 'Dummy',
+        EBMModel: 'EBM',
     }
 
 Model Name Suffixes
@@ -160,13 +183,22 @@ Models
 
    AbstractModel
    LGBModel
+   PrepLGBModel
    CatBoostModel
    XGBoostModel
+   EBMModel
    RealMLPModel
    TabMModel
    MitraModel
    TabICLModel
-   TabPFNV2Model
+   TabDPTModel
+   TabDPTTurboModel
+   TabPFNMixModel
+   TabPFNv26Model
+   TabPFN3Model
+   RealTabPFNv2Model
+   RealTabPFNv25Model
+   NoriModel
    RFModel
    XTModel
    KNNModel
@@ -195,6 +227,12 @@ Models
 .. autoclass:: LGBModel
    :members: init
 
+:hidden:`PrepLGBModel`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: PrepLGBModel
+   :members: init
+
 :hidden:`CatBoostModel`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -205,6 +243,12 @@ Models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: XGBoostModel
+   :members: init
+
+:hidden:`EBMModel`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: EBMModel
    :members: init
 
 :hidden:`RealMLPModel`
@@ -231,10 +275,52 @@ Models
 .. autoclass:: TabICLModel
    :members: init
 
-:hidden:`TabPFNV2Model`
+:hidden:`TabDPTModel`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. autoclass:: TabPFNV2Model
+.. autoclass:: TabDPTModel
+   :members: init
+
+:hidden:`TabDPTTurboModel`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: TabDPTTurboModel
+   :members: init
+
+:hidden:`TabPFNMixModel`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: TabPFNMixModel
+   :members: init
+
+:hidden:`TabPFNv26Model`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: TabPFNv26Model
+   :members: init
+
+:hidden:`TabPFN3Model`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: TabPFN3Model
+   :members: init
+
+:hidden:`RealTabPFNv2Model`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: RealTabPFNv2Model
+   :members: init
+
+:hidden:`RealTabPFNv25Model`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: RealTabPFNv25Model
+   :members: init
+
+:hidden:`NoriModel`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: NoriModel
    :members: init
 
 :hidden:`RFModel`
@@ -332,7 +418,6 @@ Experimental Models
    :nosignatures:
 
    FTTransformerModel
-   FastTextModel
 
 :hidden:`FTTransformerModel`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -340,8 +425,3 @@ Experimental Models
 .. autoclass:: FTTransformerModel
    :members: init
 
-:hidden:`FastTextModel`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: FastTextModel
-   :members: init

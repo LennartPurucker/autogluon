@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -6,7 +6,7 @@ import pytest
 from packaging.version import Version
 
 from autogluon.timeseries import TimeSeriesPredictor
-from autogluon.timeseries.dataset.ts_dataframe import ITEMID, TIMESTAMP, TimeSeriesDataFrame
+from autogluon.timeseries.dataset import TimeSeriesDataFrame
 
 TARGET_COLUMN = "custom_target"
 ITEM_IDS = ["Z", "A", "1", "C"]
@@ -20,14 +20,16 @@ def generate_train_and_test_data(
     use_past_covariates: bool = False,
     use_static_features_continuous: bool = False,
     use_static_features_categorical: bool = False,
-) -> Tuple[TimeSeriesDataFrame, TimeSeriesDataFrame]:
+) -> tuple[TimeSeriesDataFrame, TimeSeriesDataFrame]:
     min_length = prediction_length * 6
     length_per_item = {item_id: np.random.randint(min_length, min_length + 10) for item_id in ITEM_IDS}
     df_per_item = []
     for idx, (item_id, length) in enumerate(length_per_item.items()):
         start = pd.Timestamp(start_time) + (idx + 1) * pd.tseries.frequencies.to_offset(freq)
         timestamps = pd.date_range(start=start, periods=length, freq=freq)
-        index = pd.MultiIndex.from_product([(item_id,), timestamps], names=[ITEMID, TIMESTAMP])
+        index = pd.MultiIndex.from_product(
+            [(item_id,), timestamps], names=[TimeSeriesDataFrame.ITEMID, TimeSeriesDataFrame.TIMESTAMP]
+        )
         columns = {TARGET_COLUMN: np.random.normal(size=length)}
         if use_known_covariates:
             columns["known_A"] = np.random.choice(["foo", "bar", "baz"], size=length)
@@ -86,16 +88,17 @@ ALL_MODELS = {
     "SimpleFeedForward": DUMMY_MODEL_HPARAMS,
     "TemporalFusionTransformer": DUMMY_MODEL_HPARAMS,
     "TiDE": DUMMY_MODEL_HPARAMS,
-    "WaveNet": DUMMY_MODEL_HPARAMS,
     "Zero": DUMMY_MODEL_HPARAMS,
     # Override default hyperparameters for faster training
     "AutoARIMA": {"max_p": 2, "use_fallback_model": False},
+    # Use the tiny 4M checkpoint to keep CPU inference fast
+    "Toto2": {"model_path": "Datadog/Toto-2.0-4m"},
 }
 
 
 def assert_leaderboard_contains_all_models(
     leaderboard: pd.DataFrame,
-    hyperparameters: Dict[str, Any],
+    hyperparameters: dict[str, Any],
     include_ensemble: bool = True,
 ):
     """Compare the leaderboard to a set of hyperparameters provided to AutoGluon-TimeSeries,
@@ -197,7 +200,6 @@ def test_all_models_can_handle_all_covariates(
         {"SimpleFeedForward": DUMMY_MODEL_HPARAMS},
         {"TemporalFusionTransformer": DUMMY_MODEL_HPARAMS},
         {"TiDE": DUMMY_MODEL_HPARAMS},
-        {"WaveNet": DUMMY_MODEL_HPARAMS},
         {"Zero": DUMMY_MODEL_HPARAMS},
     ],
 )

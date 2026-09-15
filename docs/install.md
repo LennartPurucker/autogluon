@@ -2,12 +2,12 @@
 
 :::{note}
 
-* AutoGluon requires Python version 3.9, 3.10, 3.11, or 3.12 and is available on Linux, MacOS, and Windows.
+* AutoGluon requires Python version 3.10, 3.11, 3.12, or 3.13 and is available on Linux, MacOS, and Windows.
 
 * The AutoGluon library comes pre-installed in all releases of [Amazon SageMaker Distribution](https://github.com/aws/sagemaker-distribution). For more information, refer to the dropdown [AutoGluon in Amazon SageMaker Studio](#dropdown-sagemaker) in this page.
 
-We recommend most users to install via pip. The pip install of AutoGluon is the version we actively benchmark and test on.
-The Conda install may have subtle differences in installed dependencies that could impact performance and stability, and we recommend trying pip if you run into issues with Conda.
+We recommend most users to install with `uv` or `pip`. The `uv` install of AutoGluon is the version we actively benchmark and test on.
+The Conda install may have subtle differences in installed dependencies that could impact performance and stability, and we recommend trying `uv` or `pip` if you run into issues with Conda.
 
 :::
 
@@ -250,7 +250,7 @@ BRANCH=accel_preprocess_bool
 
 pip install -U pip
 git clone --depth 1 --single-branch --branch ${BRANCH} --recurse-submodules https://github.com/${GITHUB_USER}/autogluon.git
-cd autogluon && ./full_install.sh
+./autogluon/full_install.sh
 ```
 
 Note that the above example is only valid while the branch still exists. A user could delete the branch after the PR is merged, so this advice is primarily focused on unmerged PRs.
@@ -260,7 +260,7 @@ Note that the above example is only valid while the branch still exists. A user 
 
 :::{dropdown} Install nightly builds
 
-AutoGluon offers nightly builds that can be installed using the `--pre` argument. Nightly builds have the latest features but have not been as rigorously tested as stable releases.
+Nightly builds have the latest unreleased features but have not been as rigorously tested as stable releases. Prefer the stable install instructions above unless you specifically need an unreleased fix.
 
 ```bash
 pip install -U uv
@@ -278,7 +278,7 @@ Apple Silicon is now supported via the `conda` installation instructions outline
 
 :::{dropdown} Kaggle
 
-AutoGluon is actively used by the Kaggle community. You can find hundreds of Kaggle notebooks using AutoGluon [here](https://www.kaggle.com/search?q=autogluon+in%3Anotebooks+sortBy%3Adate).
+AutoGluon is actively used by the Kaggle community. You can find **thousands** of Kaggle notebooks using AutoGluon [here](https://www.kaggle.com/search?q=autogluon+in%3Anotebooks+sortBy%3Adate).
 
 For Kaggle competitions that allow internet access in notebooks, you can install AutoGluon via the following line at the start of the notebook:
 
